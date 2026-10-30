@@ -43,6 +43,12 @@ export interface ProjectMemory {
   shootView: ShootMemory;
   openRow: OpenRow | null;
   draft: FormDraft | null;
+  /** The asset root this tab resolved last time it was live, so
+   *  switching back to it never has to forget this and re-resolve it
+   *  from `app.db` — that round trip is what made "no folder" flash on
+   *  every switch, however briefly (store.ts `finishOpen`). */
+  assetRoot: string | null;
+  assetRootStatus: "unmapped" | "ok" | "missing";
 }
 
 /** A path new to this session: land where any first open does. */
@@ -55,7 +61,7 @@ export const INTRO_MEMORY: ProjectMemory = {
   schemaCollapsed: new Set(), shootView: {
     open: new Set(), showEmpty: true, hideCut: false, scrollTop: 0,
   },
-  openRow: null, draft: null,
+  openRow: null, draft: null, assetRoot: null, assetRootStatus: "unmapped",
 };
 
 export interface ProjectTab {
@@ -71,6 +77,15 @@ export interface ProjectTab {
    *  still shows and can still be closed; clicking it tries again.
    *  Null when the tab is fine. */
   problem: string | null;
+  /** True once this path has actually been opened live and had its
+   *  asset root resolved against `app.db` this session — as opposed to
+   *  merely being a placeholder entry (just restored at startup and
+   *  never yet visited, or added after a failed open). Only a
+   *  `resolved` tab's `memory` is trustworthy enough to restore from
+   *  on the fast path instead of resolving from `app.db` again
+   *  (store.ts `finishOpen`); otherwise its `memory` is still just
+   *  `INTRO_MEMORY`, not a real asset root. */
+  resolved: boolean;
 }
 
 interface ProjectTabsState {
@@ -90,6 +105,7 @@ interface ProjectTabsState {
   memoryOf: (path: string) => ProjectMemory | undefined;
   setExternalDot: (path: string, dot: { by: string } | null) => void;
   setProblem: (path: string, problem: string | null) => void;
+  setResolved: (path: string, resolved: boolean) => void;
   /** Move the tab at `fromIndex` to sit at `toIndex` (drag-reorder). */
   move: (fromIndex: number, toIndex: number) => void;
 }
@@ -102,7 +118,7 @@ export const useProjectTabs = create<ProjectTabsState>((set, get) => ({
       ? { tabs: s.tabs.map((t) => t.path === path ? { ...t, title } : t) }
       : { tabs: [...s.tabs, {
             path, title, memory: INTRO_MEMORY, externalDot: null,
-            problem: null,
+            problem: null, resolved: false,
           }] }
   )),
 
@@ -127,6 +143,10 @@ export const useProjectTabs = create<ProjectTabsState>((set, get) => ({
 
   setProblem: (path, problem) => set((s) => ({
     tabs: s.tabs.map((t) => t.path === path ? { ...t, problem } : t),
+  })),
+
+  setResolved: (path, resolved) => set((s) => ({
+    tabs: s.tabs.map((t) => t.path === path ? { ...t, resolved } : t),
   })),
 
   move: (fromIndex, toIndex) => set((s) => {

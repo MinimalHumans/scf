@@ -434,6 +434,7 @@ function snapshotMemory(get: () => AppState): ProjectMemory {
     locationTab: s.locationTab, selectedPropId: s.selectedPropId,
     propTab: s.propTab, schemaCollapsed: s.schemaCollapsed,
     shootView: s.shootView, openRow: s.openRow, draft: s.draft,
+    assetRoot: s.assetRoot, assetRootStatus: s.assetRootStatus,
   };
 }
 
@@ -492,14 +493,31 @@ async function finishOpen(
   get: () => AppState,
   path: string, revision: number,
 ): Promise<void> {
-  // Clear the root EXPLICITLY. Opening a film while another is live
-  // otherwise leaves `assetRoot` untouched, and the new project
-  // inherits the old one's folder — addressing every asset against
-  // another film's disk. Nothing reports it, because a stale root
-  // resolves perfectly well.
-  setAssetLocator(null);
+  // Only a tab that has actually been live before, with its asset root
+  // really resolved, is safe to restore on the fast path below — a
+  // mere placeholder (upserted at startup, or after a failed open, but
+  // never yet opened) has nothing but INTRO_MEMORY to offer, and
+  // trusting that would skip resolving its asset root at all.
+  const existingTab = useProjectTabs.getState().tabs.find(
+    (t) => t.path === path);
+  const memory = existingTab?.resolved === true
+    ? existingTab.memory : undefined;
+
+  // Clear the root EXPLICITLY for a path new to this session. Opening
+  // a film while another is live otherwise leaves `assetRoot`
+  // untouched, and the new project inherits the old one's folder —
+  // addressing every asset against another film's disk. Nothing
+  // reports it, because a stale root resolves perfectly well.
+  //
+  // A path already open this session instead carries its OWN root
+  // forward from `memory`, applied right here rather than reset to
+  // null and re-resolved from `app.db` a moment later (the bookkeeping
+  // below) — THAT round trip is what made "no folder" flash on every
+  // switch between two already-open tabs, however briefly.
   revokeAll();
   clearResolutions();
+  setAssetLocator(memory?.assetRoot == null
+    ? null : makeLocator(memory.assetRoot));
   set({ schemaCollapsed: COLLAPSE_ALL, navMode: "intro",
         shootView: freshShootView(),
         selectedCharacterId: null, asOfSceneId: null,
@@ -508,22 +526,21 @@ async function finishOpen(
         phase: "open", projectName: nameOf(path), projectPath: path,
         revision, hostLost: false,
         externalChange: false, errorMessage: null,
-        externalEdit: null,
-        assetRoot: null, assetRootStatus: "unmapped", suggestions: null,
+        externalEdit: null, suggestions: null,
+        assetRoot: memory?.assetRoot ?? null,
+        assetRootStatus: memory?.assetRootStatus ?? "unmapped",
         environmentRevision: get().environmentRevision + 1 });
 
   // This path is becoming the live tab: it needs no background watch
-  // (the main connection now reports its revision directly), and if it
-  // was visited before this session, restore where it was left rather
-  // than the "intro" landing set above.
+  // (the main connection now reports its revision directly).
   void unwatchProject(path);
-  const revisited = useProjectTabs.getState().tabs.some(
-    (t) => t.path === path);
   useProjectTabs.getState().upsert(path, nameOf(path));
   useProjectTabs.getState().setProblem(path, null);
-  if (revisited) {
-    const memory = useProjectTabs.getState().memoryOf(path);
-    if (memory !== undefined) set(memory);
+  if (memory !== undefined) {
+    // Restore where it was left — the asset root above included, so
+    // this is the rest: section, selection, any open draft.
+    set(memory);
+    return;
   }
 
   // Bookkeeping must never cost the user their session: a film that
@@ -562,6 +579,9 @@ async function finishOpen(
       uuid, title, baseName,
       ...(resolvedRoot !== null ? { assetRoot: resolvedRoot } : {}),
     });
+    // Only now: a switch back to this tab can trust its memory instead
+    // of running all of the above again.
+    useProjectTabs.getState().setResolved(path, true);
   } catch (e) {
     console.warn("[finishOpen] could not resolve the asset root:", e);
   }
