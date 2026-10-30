@@ -361,6 +361,12 @@ ul { list-style: none; margin: 0; padding: 0; }
 .licenses-row:hover { background: var(--ink-2); }
 .licenses-tag { color: var(--paper-dim); font-size: 0.9em; }
 .panels { flex: 1; display: flex; min-height: 0; }
+/* A tab switch in progress: locked immediately so nothing underneath
+ * is clicked mid-switch, dimmed only once it has taken long enough to
+ * be worth admitting to — a fast switch should show no visual change
+ * at all, not a flicker. */
+.panels-locked { pointer-events: none; }
+.panels-switching { opacity: 0.55; transition: opacity 150ms ease; }
 .rail {
   width: 240px;
   overflow-y: auto;

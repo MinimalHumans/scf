@@ -214,12 +214,22 @@ export function Workbench(): JSX.Element {
     (navMode === "structure" || navMode === "shoot");
 
   const errorMessage = useStoreRaw((st) => st.errorMessage);
-  // Set while the live tab is switching to another already-open one:
-  // the chrome (title strip, tabs) stays put, and this is shown in
-  // place of the content that is between projects, rather than
-  // unmounting the whole workbench to the start screen for a moment
-  // (store.ts `openPath`).
+  // Set while the live tab is switching to another already-open one
+  // (store.ts `openPath`). Nothing here unmounts for it: the content
+  // below is still the OUTGOING project's — untouched, so nothing in
+  // it re-queries — until the new one lands in one atomic update, and
+  // stays fully interactive-looking the whole time except for a dim
+  // that only appears if the switch is slow enough to need it. Popping
+  // the whole pane out and back in for every switch, even a fast one,
+  // read as a glitch; holding it steady and only admitting a wait once
+  // there truly is one reads as stable.
   const switchingTab = useStoreRaw((st) => st.switchingTab);
+  const [switchTakingAWhile, setSwitchTakingAWhile] = useState(false);
+  useEffect(() => {
+    if (!switchingTab) { setSwitchTakingAWhile(false); return; }
+    const t = setTimeout(() => setSwitchTakingAWhile(true), 150);
+    return () => clearTimeout(t);
+  }, [switchingTab]);
   return (
     <div className="workbench">
       {errorMessage !== null && (
@@ -235,9 +245,10 @@ export function Workbench(): JSX.Element {
       {about}
       {settings}
       {licenses}
-      {switchingTab ? <div className="panels panels-switching" /> :
-       front !== "project" ? <ToolPane id={front} /> : (
-      <div className="panels">
+      {front !== "project" ? <ToolPane id={front} /> : (
+      <div className={"panels" +
+                       (switchingTab ? " panels-locked" : "") +
+                       (switchTakingAWhile ? " panels-switching" : "")}>
         <ActivityBar />
         {railContent !== null && (
           <nav className="rail rail-nav" style={{ width: railWidth }}
