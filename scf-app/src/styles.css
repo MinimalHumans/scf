@@ -121,6 +121,7 @@ ul { list-style: none; margin: 0; padding: 0; }
 
 /* ---- title strip ---- */
 .title-strip {
+  position: relative;
   display: flex;
   align-items: stretch;
   gap: 6px;
@@ -135,6 +136,20 @@ ul { list-style: none; margin: 0; padding: 0; }
 .title-strip .search { margin-left: 0; }
 .title-drag { flex: 1; align-self: stretch; min-width: 24px; }
 .title-status { display: flex; align-items: center; gap: 8px; }
+/* Anchored to the strip's own right edge, not to the flex flow after
+ * the variable-width tab list: a tab's title or dot changing length
+ * must never nudge the search box (or the window buttons) sideways —
+ * their position depends only on the window's width, never on what
+ * the tabs say. */
+.title-trailing {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 
 .app-menu { position: relative; }
 .app-menu-button { padding: 5px 7px; display: flex; }

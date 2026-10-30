@@ -232,9 +232,11 @@ export function TitleStrip({ ctx, search, status, showProject = true }: {
         ))}
       </div>
       <div className="title-drag" data-tauri-drag-region />
-      {search}
-      {status !== undefined && <div className="title-status">{status}</div>}
-      {frameless && <WindowControls />}
+      <div className="title-trailing">
+        {search}
+        {status !== undefined && <div className="title-status">{status}</div>}
+        {frameless && <WindowControls />}
+      </div>
     </header>
   );
 }
