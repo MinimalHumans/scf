@@ -62,7 +62,21 @@ const SHORTCUTS: NavMode[] = SECTION_GROUPS
   .map((s) => s.mode);
 
 export function ActivityBar(): JSX.Element {
-  const { navMode, setNavMode } = useStore();
+  const { navMode, setNavMode, assetResolution } = useStore();
+  // Fires on its own — unlike the menu badge, this isn't gated on the
+  // folder being unset: a root that resolves fine but a file that moved
+  // or got deleted belongs here too, since this is where the fix is.
+  //
+  // Only genuinely broken assets count: `missing` (should be there,
+  // isn't) and `out-of-root` (points somewhere that can never resolve).
+  // `unaddressed` (no root attached at all) is excluded on purpose — an
+  // asset nothing has tried to resolve yet is not broken, it is simply
+  // unmapped, and that is the menu badge's story to tell, not this
+  // one's (same reasoning as IdentityPanel's own Assets tally: "listed,
+  // not broken"). `unmaterialised` (a synced placeholder) is healthy.
+  const counts = assetResolution?.counts ?? null;
+  const brokenAssets = counts !== null &&
+    counts.missing + counts["out-of-root"] > 0;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -94,15 +108,23 @@ export function ActivityBar(): JSX.Element {
             if (s.noShortcut !== true) n += 1;
             const key = n === 10 ? "0" : String(n);
             const active = navMode === s.mode;
+            const flagged = s.mode === "assets" && brokenAssets;
+            const baseTitle = s.pending ?? (s.noShortcut === true ? s.label
+              : `${s.label} (Alt+${key})`);
             return (
               <button key={s.mode}
                       className={"activity-item" + (active ? " active" : "")}
                       aria-current={active ? "page" : undefined}
                       disabled={s.pending !== undefined}
-                      title={s.pending ?? (s.noShortcut === true ? s.label
-                        : `${s.label} (Alt+${key})`)}
+                      title={flagged
+                        ? `${baseTitle} — some assets are missing or ` +
+                          "can't be located"
+                        : baseTitle}
                       onClick={() => setNavMode(s.mode)}>
-                {s.label}
+                <span className="activity-item-label">{s.label}</span>
+                {flagged && (
+                  <span className="activity-item-badge" aria-hidden="true" />
+                )}
               </button>
             );
           })}

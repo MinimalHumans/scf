@@ -146,6 +146,15 @@ export function Workbench(): JSX.Element {
   const { navMode, openRow, selectedEntityType, selectedSubject } =
     useStore();
   const front = useTabs((t) => t.active);
+
+  // Keeps `assetResolution` current for the menu and Assets-nav badges,
+  // which only read it — this is the one place that re-scans, on the
+  // same signal IdentityPanel's own tally already re-runs on (a folder
+  // attached, a project opened or switched).
+  const resolveAssets = useStoreRaw((s) => s.resolveAssets);
+  const environmentRevision = useStoreRaw((s) => s.environmentRevision);
+  useEffect(() => { void resolveAssets(); }, [environmentRevision, resolveAssets]);
+
   const { ctx: commandCtx, about, settings, licenses } = useAppCommands({
     hasProject: true, identityOpen,
     toggleIdentity: () => { setIdentityOpen((v) => !v); },
@@ -241,7 +250,7 @@ export function Workbench(): JSX.Element {
       )}
       <HostBanner />
       <TitleStrip ctx={commandCtx} search={<SearchBox />}
-                  status={<><RootStatus /><SaveControls /></>} />
+                  status={<SaveControls />} />
       {about}
       {settings}
       {licenses}
@@ -287,41 +296,6 @@ export function Workbench(): JSX.Element {
       )}
     </div>
   );
-}
-
-/**
- * Whether this session can see the project folder — and the way to give
- * it one.
- *
- * Silent when the root is granted and checked; there is nothing to say.
- * "no folder" is a BUTTON, not a label: the same native dialog as
- * attaching a new one, with no permission model to manage — the OS
- * already handed the app the path.
- */
-function RootStatus(): JSX.Element | null {
-  const { assetRoot, assetRootStatus, attachFolder } = useStore();
-
-  if (assetRoot === null) {
-    return (
-      <button className="ghost tiny topbar-root-attach"
-              onClick={() => void attachFolder()}
-              title="No project folder, so assets cannot resolve. Choose
-the folder this project's assets live in.">
-        no folder
-      </button>
-    );
-  }
-  if (assetRootStatus === "missing") {
-    return (
-      <button className="ghost tiny topbar-root-blocked"
-              onClick={() => void attachFolder()}
-              title={`${assetRoot} could not be found — it may have moved
-or be on a drive that is not connected right now. Click to choose again.`}>
-        folder not found
-      </button>
-    );
-  }
-  return null;
 }
 
 /**

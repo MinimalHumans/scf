@@ -122,6 +122,11 @@ interface AppState {
   /** "missing" when `assetRoot` is set but the folder cannot be found
    *  on disk right now (moved, an unmounted network drive, …). */
   assetRootStatus: "unmapped" | "ok" | "missing";
+  /** The last `resolveAssets` scan for the live project, kept here so
+   *  the menu badge and the Assets nav badge can both ask "is anything
+   *  unresolved?" without each running their own scan. Null until the
+   *  first scan lands for this project. */
+  assetResolution: ResolutionReport | null;
   /** Shown when the current film's path is new to `app.db` but a uuid
    *  or title/base-name match suggests where its assets might be
    *  (file-management-plan.md §3.2 point 3). Null when there is
@@ -470,7 +475,8 @@ async function closeToStart(
         selectedPropId: null, propTab: "Profile",
         assetPrefix: "", openRow: null, draft: null,
         selectedSubject: null, assetRoot: null,
-        assetRootStatus: "unmapped", suggestions: null });
+        assetRootStatus: "unmapped", assetResolution: null,
+        suggestions: null });
   try {
     await (await getHost()).closeFilm();
   } catch {
@@ -529,6 +535,7 @@ async function finishOpen(
         externalEdit: null, suggestions: null,
         assetRoot: memory?.assetRoot ?? null,
         assetRootStatus: memory?.assetRootStatus ?? "unmapped",
+        assetResolution: null,
         environmentRevision: get().environmentRevision + 1 });
 
   // This path is becoming the live tab: it needs no background watch
@@ -648,6 +655,7 @@ export const useStore = create<AppState>((set, get) => ({
   dismissExternalEdit: () => useStore.setState({ externalEdit: null }),
   assetRoot: null,
   assetRootStatus: "unmapped",
+  assetResolution: null,
   suggestions: null,
   environmentRevision: 0,
   revision: 0,
@@ -873,7 +881,11 @@ export const useStore = create<AppState>((set, get) => ({
     // Keep the query layer's locator in step with the session: Q13
     // reports what resolves, and a stale root would make it lie.
     setAssetLocator(assetRoot === null ? null : makeLocator(assetRoot));
-    return resolveAllAssets(exec, makeLocator(assetRoot));
+    const report = await resolveAllAssets(exec, makeLocator(assetRoot));
+    // Cached for the menu and Assets-nav badges, which read this rather
+    // than each running their own scan.
+    set({ assetResolution: report });
+    return report;
   },
 
   newProject: async () => {

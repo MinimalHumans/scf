@@ -16,6 +16,12 @@
   --amber-dim: #3d6b9e;
   --blocker: #e06c75;
   --ok: #7fbf8e;
+  /* A true warm amber/orange, for the asset-folder badges only — the
+     existing --amber is blue despite its name, and every other place
+     already uses it that way, so it stays as-is rather than being
+     reinterpreted app-wide. */
+  --warn: #e0a438;
+  --warn-dim: #8a6a2e;
   --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
@@ -152,7 +158,17 @@ ul { list-style: none; margin: 0; padding: 0; }
 }
 
 .app-menu { position: relative; }
-.app-menu-button { padding: 5px 7px; display: flex; }
+.app-menu-button { padding: 5px 7px; display: flex; position: relative; }
+/* The one thing worth a glance before opening the menu: the project
+   folder needs attention and something actually needs it resolved. */
+.app-menu-badge {
+  position: absolute; top: 3px; right: 3px;
+  width: 6px; height: 6px; border-radius: 50%;
+}
+/* No folder ever set — a setup gap, not a regression. */
+.app-menu-badge-warn { background: var(--warn); }
+/* A folder WAS set and now can't be found — an active break. */
+.app-menu-badge-blocker { background: var(--blocker); }
 .app-menu-popup {
   position: absolute;
   top: calc(100% + 4px);
@@ -1911,10 +1927,6 @@ tr.prop-weak td { opacity: .6; }
 /* --- Project folder (P2) --------------------------------------------- */
 .topbar-root { font-size: 11px; }
 .topbar-root-regrant { color: var(--amber); border-color: var(--amber); }
-/* "no folder" is an invitation, not a verdict: dim until hovered, so it
-   reads as the same quiet status it replaced but answers to a click. */
-.topbar-root-attach { color: var(--paper-dim); }
-.topbar-root-attach:hover:not(:disabled) { color: var(--paper); }
 /* A refused folder. Wide enough to read the reason — the message names
    both the file and the folder, and a truncated one would be useless. */
 .topbar-root-refusal {
@@ -1930,7 +1942,6 @@ tr.prop-weak td { opacity: .6; }
 .start-report summary { cursor: pointer; color: var(--paper-dim); }
 .start-report ul { margin: 6px 0 0; padding-left: 16px; }
 .start-report li { word-break: break-word; }
-.topbar-root-blocked { color: var(--amber); }
 
 /* --- Recent projects (start screen) ---------------------------------- */
 .recent-projects { margin-top: 20px; text-align: left; }
@@ -1990,7 +2001,20 @@ tr.prop-weak td { opacity: .6; }
 .form-resolution-out-of-root .form-resolution-detail { color: var(--amber); }
 
 /* --- Asset browser (P4) ---------------------------------------------- */
-.asset-browser { display: flex; height: 100%; min-height: 0; }
+.asset-browser { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.asset-folder-prompt {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 8px 12px; margin: 4px 4px 0;
+  border: 1px solid; border-radius: 4px;
+  font-size: 11.5px; line-height: 1.4; flex-shrink: 0;
+}
+.asset-folder-prompt span { flex: 1; }
+/* No folder ever set — a setup gap, not a regression. */
+.asset-folder-prompt-warn { border-color: var(--warn); color: var(--warn); }
+/* A folder WAS set and now can't be found — an active break. */
+.asset-folder-prompt-blocker {
+  border-color: var(--blocker); color: var(--blocker);
+}
 .asset-browser-empty {
   display: block;
   padding: 24px;
@@ -2228,13 +2252,25 @@ button.standing-tag:hover { color: var(--paper); border-color: var(--paper-dim);
   padding: 0 8px 3px;
 }
 .activity-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
   text-align: left;
   background: none;
   border: 0;
   border-radius: 3px;
   padding: 5px 8px;
+  width: 100%;
   color: var(--paper);
   white-space: nowrap;
+}
+.activity-item-label { overflow: hidden; text-overflow: ellipsis; }
+/* Broken media (missing or unresolvable) — always a blocker, never
+   just the amber "needs setup" of the menu badge. */
+.activity-item-badge {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  background: var(--blocker);
 }
 .activity-item:hover:not(:disabled) { background: var(--ink-2); }
 .activity-item.active {

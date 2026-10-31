@@ -366,7 +366,22 @@ no intent resolves for nothing."
 const PAGE = 300;
 
 export function AssetBrowser(): JSX.Element {
-  const { openEntityRow, assetPrefix, setAssetPrefix } = useStore();
+  const { openEntityRow, assetPrefix, setAssetPrefix, assetRoot,
+          assetRootStatus, attachFolder } = useStore();
+  const folderPrompt = assetRootStatus === "ok" ? null : (
+    <div className={`asset-folder-prompt asset-folder-prompt-${
+      assetRootStatus === "missing" ? "blocker" : "warn"}`}>
+      <span>
+        {assetRoot === null
+          ? "No project folder is set, so asset files can't be located."
+          : `${assetRoot} could not be found — it may have moved, or be ` +
+            "on a drive that isn't connected right now."}
+      </span>
+      <button className="tiny" onClick={() => void attachFolder()}>
+        {assetRoot === null ? "Choose folder…" : "Choose again…"}
+      </button>
+    </div>
+  );
   const { assets, orphans, loading, reload } = useAssetIndex();
   const [filter, setFilter] = useState<AssetFilter>({});
   const [shownCount, setShownCount] = useState(PAGE);
@@ -409,6 +424,7 @@ export function AssetBrowser(): JSX.Element {
   if (assets.length === 0) {
     return (
       <div className="asset-browser asset-browser-empty">
+        {folderPrompt}
         <h3>No assets yet</h3>
         <p className="muted">
           An asset is a reference to something outside this file — an
@@ -426,6 +442,7 @@ export function AssetBrowser(): JSX.Element {
 
   return (
     <div className="asset-browser">
+      {folderPrompt}
       <div className="asset-main">
         <div className="asset-filters">
           <input placeholder="filter by name or identifier"

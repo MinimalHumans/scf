@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ProjectRow } from "@scf-host/appStore.ts";
 import { windowAppStore } from "../../host/windowAppStore.ts";
-import { nameOf } from "../../state/store.ts";
+import { nameOf, useStore } from "../../state/store.ts";
 import {
   menuModel, runCommand, topLevelItems, type CommandContext,
   type MenuItem,
@@ -144,6 +144,23 @@ export function AppMenu({ ctx }: { ctx: CommandContext }): JSX.Element {
   const groups = menuModel(ctx);
   const bottom = topLevelItems(ctx);
 
+  // The one thing worth interrupting for from here: the project has no
+  // usable folder AND there is something that actually needs it. A film
+  // with no assets, or one whose root is fine, never shows this.
+  //
+  // Severity splits by cause, not just by "root isn't ok": a folder
+  // that was simply never set is a setup gap (`unaddressed` assets,
+  // amber); one that WAS set and now can't be found is a live
+  // regression — every asset under it resolves as `missing`, same as
+  // a deleted file would — so it reads as a blocker, red, like the
+  // Assets-nav badge's own "broken media" case.
+  const assetRootStatus = useStore((s) => s.assetRootStatus);
+  const counts = useStore((s) => s.assetResolution?.counts ?? null);
+  const needsFolder = counts !== null && (
+    (assetRootStatus === "unmapped" && counts.unaddressed > 0) ||
+    (assetRootStatus === "missing" && counts.missing > 0));
+  const folderSeverity = assetRootStatus === "missing" ? "blocker" : "warn";
+
   useEffect(() => {
     if (!open) return;
     const away = (e: PointerEvent): void => {
@@ -183,12 +200,21 @@ export function AppMenu({ ctx }: { ctx: CommandContext }): JSX.Element {
   return (
     <div className="app-menu" ref={root} onKeyDown={onKeyDown}>
       <button className="app-menu-button ghost" aria-haspopup="menu"
-              aria-expanded={open} aria-label="Menu" title="Menu"
+              aria-expanded={open} aria-label="Menu"
+              title={!needsFolder ? "Menu" : assetRootStatus === "missing"
+                ? "Menu — the project folder can't be found, so some " +
+                  "assets can't resolve"
+                : "Menu — no project folder is set, so some assets can't " +
+                  "resolve"}
               onClick={() => setOpen((v) => !v)}>
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
           <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor"
                 strokeWidth="1.5" strokeLinecap="round" fill="none" />
         </svg>
+        {needsFolder && (
+          <span className={`app-menu-badge app-menu-badge-${folderSeverity}`}
+                aria-hidden="true" />
+        )}
       </button>
       {open && (
         <div className="app-menu-popup" role="menu">
