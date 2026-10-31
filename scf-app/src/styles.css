@@ -28,6 +28,24 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
+
+/* The OS default — wide, light, chromed — reads as a foreign control
+ * dropped onto an ink-dark editor. This one sits flush with the line
+ * color at rest and only steps up to paper-dim on hover, so it reads
+ * as part of the chrome instead of calling attention to itself.
+ * `.tab-scroll` (the title-strip tabs, further down) keeps its own
+ * hidden scrollbar — more specific than `*`, so it still wins there. */
+* { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background-color: var(--line);
+  background-clip: content-box;
+  border: 2px solid transparent;
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-thumb:hover { background-color: var(--paper-dim); }
+*::-webkit-scrollbar-corner { background: transparent; }
 body {
   background: var(--ink-0);
   color: var(--paper);
