@@ -153,23 +153,56 @@ async function verify(db: AppDb): Promise<AppDb> {
 }
 
 /**
- * Open `path`, verifying it. A file that cannot be opened or fails its
- * integrity check is moved aside as `<path>.bak` (overwriting any
- * earlier one) and a fresh database opened in its place — history is
- * never silently dropped without leaving the old file. A path that does
- * not exist yet is not corruption: that failure is rethrown as is.
+ * Whether `e` looks like SQLite reporting lock contention (a process that
+ * has not let go of the file yet — e.g. one still shutting down from a
+ * branch switch or restart), on either driver this runs over. Never a
+ * sign of corruption: that failure clears on its own, and must never be
+ * "fixed" by discarding the file it is contending over.
+ */
+function isLockContention(e: unknown): boolean {
+  const message = e instanceof Error ? e.message : String(e);
+  return /\b(locked|busy)\b/i.test(message);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
+/** Extra patience for a lock to clear, beyond each open's own
+ *  PRAGMA busy_timeout — covers a previous process still exiting. */
+const LOCK_RETRY_DELAYS_MS = [75, 200, 500];
+
+/**
+ * Open `path`, verifying it. A file that fails its integrity check, or
+ * cannot be opened for a reason other than lock contention, is moved
+ * aside as `<path>.bak` (overwriting any earlier one) and a fresh
+ * database opened in its place — history is never silently dropped
+ * without leaving the old file. A path that does not exist yet is not
+ * corruption: that failure is rethrown as is.
+ *
+ * Lock contention (another process still holding the file) is retried
+ * instead: it is transient, not corruption, and must never be treated as
+ * a reason to back up and recreate the file out from under that process.
+ * If it never clears, the error is rethrown rather than guessed at.
  */
 export async function openVerified(
     path: string, open: OpenAppDb, fs: AppStoreFs): Promise<AppDb> {
-  try {
-    return await verify(await open(path));
-  } catch (e) {
-    if (!(await fs.exists(path))) throw e;
-    const backup = `${path}.bak`;
-    await fs.remove(backup).catch(() => undefined);
-    await fs.rename(path, backup);
-    return await verify(await open(path));
+  let lastError: unknown;
+  for (const delay of [0, ...LOCK_RETRY_DELAYS_MS]) {
+    if (delay > 0) await sleep(delay);
+    try {
+      return await verify(await open(path));
+    } catch (e) {
+      lastError = e;
+      if (!isLockContention(e)) break;
+    }
   }
+  if (isLockContention(lastError)) throw lastError;
+  if (!(await fs.exists(path))) throw lastError;
+  const backup = `${path}.bak`;
+  await fs.remove(backup).catch(() => undefined);
+  await fs.rename(path, backup);
+  return await verify(await open(path));
 }
 
 async function migrate(

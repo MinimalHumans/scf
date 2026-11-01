@@ -51,6 +51,11 @@ export function openNodeDatabase(
   const db = new DatabaseSync(path, {
     readOnly: options.readOnly ?? false,
   });
+  // Set before any other statement — including a caller's own
+  // integrity check right after open — so a connection that finds the
+  // file locked by another process waits instead of failing immediately.
+  // Mirrors the Tauri driver's rusqlite connection (src-tauri/src/sql.rs).
+  db.prepare("PRAGMA busy_timeout = 5000").run();
   // async so that driver errors surface as rejections, never synchronous
   // throws — callers of the SqlExec seam must be able to rely on that.
   const exec: SqlExec = async (sql, params = []) => {

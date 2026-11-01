@@ -44,5 +44,8 @@ export function windowAppStore(): Promise<AppStore> {
         files.paths.join(dataDir, "mcp-config.json"), files.readText),
     });
   })();
+  // A failed open (e.g. unresolved lock contention) is tried again by
+  // the next caller, rather than wedging the window for the session.
+  store.catch(() => { store = null; });
   return store;
 }

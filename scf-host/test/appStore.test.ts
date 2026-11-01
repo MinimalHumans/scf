@@ -11,7 +11,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { openNodeAppStore } from "../src/nodeAppStore.ts";
-import type { AppStore } from "../src/appStore.ts";
+import {
+  openVerified, type AppDb, type AppStore, type AppStoreFs, type OpenAppDb,
+} from "../src/appStore.ts";
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "scf-app-store-")); });
@@ -186,6 +188,67 @@ describe("corruption", () => {
     const store: AppStore = await openNodeAppStore(path);
     await store.close();
     expect(existsSync(`${path}.bak`)).toBe(false);
+  });
+});
+
+describe("lock contention vs. corruption", () => {
+  function fakeDb(): AppDb {
+    return {
+      exec: (sql) => Promise.resolve(
+        /quick_check/i.test(sql) ? [{ quick_check: "ok" }] : []),
+      close: () => Promise.resolve(),
+    };
+  }
+
+  function fsExpectingNoBackup(): AppStoreFs & { renamed: boolean } {
+    const fs = {
+      renamed: false,
+      exists: () => Promise.resolve(true),
+      remove: () => Promise.resolve(),
+      rename: () => { fs.renamed = true; return Promise.resolve(); },
+    };
+    return fs;
+  }
+
+  test("retries past transient lock contention without backing up",
+      async () => {
+    let attempts = 0;
+    const open: OpenAppDb = () => {
+      attempts += 1;
+      return attempts < 3
+        ? Promise.reject(new Error("database is locked"))
+        : Promise.resolve(fakeDb());
+    };
+    const fs = fsExpectingNoBackup();
+    const db = await openVerified("/fake/app.db", open, fs);
+    await db.close();
+    expect(attempts).toBe(3);
+    expect(fs.renamed).toBe(false);
+  });
+
+  test("surfaces a lock that never clears, instead of wiping the file",
+      async () => {
+    const open: OpenAppDb = () =>
+      Promise.reject(new Error("database is locked"));
+    const fs = fsExpectingNoBackup();
+    await expect(openVerified("/fake/app.db", open, fs))
+      .rejects.toThrow(/locked/);
+    expect(fs.renamed).toBe(false);
+  });
+
+  test("a non-lock failure still backs up and recreates", async () => {
+    let attempts = 0;
+    const open: OpenAppDb = () => {
+      attempts += 1;
+      return attempts === 1
+        ? Promise.reject(new Error("file is not a database"))
+        : Promise.resolve(fakeDb());
+    };
+    const fs = fsExpectingNoBackup();
+    const db = await openVerified("/fake/app.db", open, fs);
+    await db.close();
+    expect(attempts).toBe(2);
+    expect(fs.renamed).toBe(true);
   });
 });
 
