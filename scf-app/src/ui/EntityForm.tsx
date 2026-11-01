@@ -271,6 +271,29 @@ function AssetResolution({ identifier }: {
   const size = state.sizeBytes === null
     ? null : `${Math.round(state.sizeBytes / 1024).toLocaleString()} KB`;
 
+  // Broken is read as one sentence, not a row of terse facts: "resolves
+  // · missing · glb" has no connecting words and nothing to parse it
+  // as. The healthy row below works as a row because every reader of
+  // it already expects a fact sheet; a problem needs a sentence.
+  if (state.state === "missing" || state.state === "out-of-root") {
+    const headline = STATE_LABEL[state.state] +
+      (state.format !== null ? ` (${state.format})` : "");
+    const rest = [
+      state.detail,
+      assetRoot === null && state.state === "missing"
+        ? "this session has no project folder attached, so nothing " +
+          "can resolve"
+        : null,
+    ].filter((s): s is string => s !== null);
+    return (
+      <footer className={`form-resolution form-resolution-${state.state}`}>
+        <span className="form-resolution-detail">
+          {[headline, ...rest].join(" — ")}
+        </span>
+      </footer>
+    );
+  }
+
   return (
     <footer className={`form-resolution form-resolution-${state.state}`}>
       <span className="muted">resolves</span>
@@ -278,15 +301,6 @@ function AssetResolution({ identifier }: {
       {size !== null && <span className="muted">{size}</span>}
       {state.format !== null && (
         <span className="muted mono">{state.format}</span>
-      )}
-      {state.detail !== null && (
-        <span className="form-resolution-detail">{state.detail}</span>
-      )}
-      {assetRoot === null && state.state === "missing" && (
-        <span className="form-resolution-detail">
-          — this session has no project folder attached, so nothing can
-          resolve
-        </span>
       )}
     </footer>
   );
