@@ -357,6 +357,9 @@ ul { list-style: none; margin: 0; padding: 0; }
 .settings-pairing-list {
   list-style: none; margin: 10px 0 0; padding: 0; display: flex;
   flex-direction: column; gap: 8px;
+  /* Browser-history-like: a long list scrolls in place rather than
+     pushing the Event log section below it off screen. */
+  max-height: 280px; overflow-y: auto;
 }
 .settings-pairing-row {
   display: flex; justify-content: space-between; align-items: center;
@@ -365,6 +368,9 @@ ul { list-style: none; margin: 0; padding: 0; }
 }
 .settings-pairing-main {
   display: flex; flex-direction: column; gap: 2px; min-width: 0;
+}
+.settings-pairing-title {
+  display: flex; align-items: baseline; gap: 10px;
 }
 .settings-pairing-main .mono {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

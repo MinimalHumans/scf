@@ -25,6 +25,30 @@ import { windowAuditStore } from "../../host/windowAuditStore.ts";
 import { chooseAssetFolder } from "../../files/assetFolderChooser.ts";
 import { useSettings } from "../../state/settings.ts";
 import { useStore } from "../../state/store.ts";
+import { useTabs } from "../../state/tabs.ts";
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug",
+  "Sep", "Oct", "Nov", "Dec"];
+
+/** "Today, 14:32" / "Yesterday, 09:05" / "Mar 4, 10:17" / "Mar 4 2024" —
+ *  a browser history's sense of a last-visited time, not a log's. */
+function formatLastOpened(iso: string, now: Date): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const sameDay = (a: Date, b: Date): boolean =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate();
+  if (sameDay(d, now)) return `Today, ${time}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (sameDay(d, yesterday)) return `Yesterday, ${time}`;
+  const month = MONTHS[d.getMonth()] ?? "";
+  return d.getFullYear() === now.getFullYear()
+    ? `${month} ${String(d.getDate())}, ${time}`
+    : `${month} ${String(d.getDate())} ${String(d.getFullYear())}`;
+}
 
 const describe = (e: unknown): string =>
   e instanceof Error ? e.message : String(e);
@@ -85,7 +109,7 @@ function ProjectsSection(): JSX.Element {
     void (async () => {
       try {
         const store = await windowAppStore();
-        const projects = await store.recentProjects(50);
+        const projects = await store.recentProjects(500);
         const withChecks = await Promise.all(projects.map(async (p) => ({
           ...p,
           rootMissing: p.assetRoot === null ? null
@@ -126,13 +150,15 @@ function ProjectsSection(): JSX.Element {
     });
   };
 
+  const now = new Date();
+
   return (
     <section>
       <h4>Project history</h4>
       <p className="muted small">
-        Every project this app has opened, and the asset folder it is
-        paired with. Kept in app.db regardless of which project is open
-        right now.
+        Every project this app has opened, newest first, and the asset
+        folder each is paired with. Kept in app.db regardless of which
+        project is open right now.
       </p>
       {error !== null && <p className="settings-error">{error}</p>}
       {rows === null && error === null && <p className="muted">Loading…</p>}
@@ -144,7 +170,12 @@ function ProjectsSection(): JSX.Element {
           {rows.map((r) => (
             <li key={r.pathKey} className="settings-pairing-row">
               <div className="settings-pairing-main">
-                <strong>{r.title ?? r.baseName ?? "Untitled"}</strong>
+                <div className="settings-pairing-title">
+                  <strong>{r.title ?? r.baseName ?? "Untitled"}</strong>
+                  <span className="muted small">
+                    {formatLastOpened(r.lastOpened, now)}
+                  </span>
+                </div>
                 <span className="muted small mono">{r.scfPath}</span>
                 <span className="muted small mono">
                   {r.assetRoot ?? "no folder paired"}
@@ -174,84 +205,79 @@ function ProjectsSection(): JSX.Element {
   );
 }
 
-const RETENTION_DAYS = [30, 90, 365];
-
-function EventLogSection(): JSX.Element {
-  const [days, setDays] = useState(90);
+function EventLogSection({ onClose }: { onClose: () => void }): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const pruneNow = (): void => {
+  const clearNow = (): void => {
     void confirm(
-      `Delete every event older than ${String(days)} days? This cannot ` +
-      "be undone — export from the Event log tab first if you want a copy.",
-      { title: "Delete old events", kind: "warning" },
+      "Clear the event log? This can't be undone — open the event log " +
+      "first if you want to export a copy.",
+      { title: "Clear event log", kind: "warning" },
     ).then((ok) => {
       if (!ok) return;
       void (async () => {
         setBusy(true);
         setError(null);
         setNotice(null);
-        const before =
-          new Date(Date.now() - days * 86_400_000).toISOString();
+        // A cutoff a moment ahead of now catches every row written so far.
+        const before = new Date(Date.now() + 1000).toISOString();
         const store = await windowAuditStore();
         const removed = await store.prune(before);
         await store.append({
           actorKind: "user", actorName: "window", scope: "app",
-          action: "settings.eventLog.prune",
-          summary: `removed ${String(removed)} events older than ` +
-            `${String(days)} days`,
+          action: "settings.eventLog.clear",
+          summary: `cleared ${String(removed)} events`,
         }).catch((e: unknown) => {
-          console.error("audit trail write failed:", e);
+          console.error("event log write failed:", e);
         });
-        setNotice(`Removed ${String(removed)} event${
-          removed === 1 ? "" : "s"} older than ${String(days)} days.`);
+        setNotice(`Cleared ${String(removed)} event${
+          removed === 1 ? "" : "s"}.`);
       })().catch((e: unknown) => setError(describe(e)))
         .finally(() => setBusy(false));
     });
+  };
+
+  const openEventLog = (): void => {
+    useTabs.getState().openTool("events");
+    onClose();
   };
 
   return (
     <section>
       <h4>Event log</h4>
       <p className="muted small">
-        A manual cleanup for the local event log (audit.db). This deletes
-        from the front of the chain; events kept past this point stay
-        verifiable.
+        A local work history of what happened in your projects and in
+        this app, kept on this machine. It isn't shared or synced
+        anywhere, so it's yours to clear whenever you like.
       </p>
-      <label className="settings-row">
-        Delete events older than
-        <select value={days}
-                onChange={(e) => setDays(Number(e.target.value))}>
-          {RETENTION_DAYS.map((d) => (
-            <option key={d} value={d}>
-              {d < 365 ? `${String(d)} days` : "1 year"}
-            </option>
-          ))}
-        </select>
-        <button className="danger" disabled={busy} onClick={pruneNow}>
-          Delete now
+      <div className="settings-row">
+        <button className="ghost tiny" onClick={openEventLog}>
+          Open the event log
         </button>
-      </label>
+        <button className="danger tiny" disabled={busy} onClick={clearNow}>
+          Clear event log…
+        </button>
+      </div>
       {notice !== null && <p className="muted small">{notice}</p>}
       {error !== null && <p className="settings-error">{error}</p>}
     </section>
   );
 }
 
-function DataSection(): JSX.Element {
+function DataSection({ onClose }: { onClose: () => void }): JSX.Element {
   return (
     <section>
       <h3>Local data</h3>
       <p className="muted small">
         Project pairings and the event log are both cached on this
-        machine — in app.db and audit.db — not stored in any project
-        file. This is the only place that edits either cache; the start
-        screen's recent-projects list just reads it.
+        machine, not stored in any project file. This is the only place
+        that edits either one; the start screen's recent-projects list
+        just reads it.
       </p>
       <ProjectsSection />
-      <EventLogSection />
+      <EventLogSection onClose={onClose} />
     </section>
   );
 }
@@ -286,7 +312,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }):
           </nav>
           <div className="settings-content">
             {section === "general" && <GeneralSection />}
-            {section === "data" && <DataSection />}
+            {section === "data" && <DataSection onClose={onClose} />}
           </div>
         </div>
       </div>
