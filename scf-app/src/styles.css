@@ -2014,12 +2014,17 @@ tr.prop-weak td { opacity: .6; }
   border-top: 1px solid var(--line); font-size: 11.5px;
 }
 .form-resolution-detail { flex-basis: 100%; color: var(--paper-dim); }
-/* Missing or never-resolvable — the same --blocker red as the Assets
-   nav badge and the asset list (never --amber, which despite its name
-   reads as an informational blue, not a warning). */
-.form-resolution-missing, .form-resolution-out-of-root { color: var(--blocker); }
+/* Missing or never-resolvable — a banner, not just colored text, in the
+   same red-tinted treatment as error-toast's (never --amber, which
+   despite its name reads as an informational blue, not a warning). */
+.form-resolution-missing, .form-resolution-out-of-root {
+  background: #2a1b20; border: 1px solid var(--blocker); border-radius: 4px;
+  padding: 8px 10px; color: #f0c9cd;
+}
+.form-resolution-missing .muted,
+.form-resolution-out-of-root .muted { color: #f0c9cd; opacity: .7; }
 .form-resolution-missing .form-resolution-detail,
-.form-resolution-out-of-root .form-resolution-detail { color: var(--blocker); }
+.form-resolution-out-of-root .form-resolution-detail { color: #f0c9cd; }
 
 /* --- Asset browser (P4) ---------------------------------------------- */
 .asset-browser { display: flex; flex-direction: column; height: 100%; min-height: 0; }
