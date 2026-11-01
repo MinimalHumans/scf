@@ -1,4 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
 [workspace]
-members = ["scf-app/src-tauri", "media-core"]
+members = ["scf-app/src-tauri", "media-core", "media-server"]
 resolver = "2"

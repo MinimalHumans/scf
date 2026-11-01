@@ -1,51 +1,48 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * objectUrlCache — one object URL per file, however many thumbnails
- * are looking at it.
+ * objectUrlCache — one media-server URL per file, however many
+ * thumbnails are looking at it.
  *
- * Creating a URL and revoking it on unmount is right for one previewer
- * and wrong for a list: the same plate can be in a bundle list, on a
- * binding, behind a subject's anchor and in the asset browser at the
- * same moment, and four URLs for one file is four things to revoke and
- * three chances to leak.
+ * Through Phase 1 of the media server this held a Blob object URL,
+ * refcounted and revoked after a grace period because a Blob costs
+ * real memory to keep alive and because two components can be looking
+ * at the same plate at once (a bundle list, a binding, a subject's
+ * anchor, the asset browser). Phase 2 (docs/media-server-spec.md)
+ * replaced the blob with a loopback HTTP URL — `http://127.0.0.1:
+ * <port>/media?h=<handle>&t=<token>` — and that changes what this
+ * module has to do: a URL *string* naming a handle the Rust side
+ * already knows about costs nothing to hold for the rest of the
+ * session, so there is no refcount, no grace period and nothing to
+ * revoke. What's left is a plain memoizing cache, so acquiring the
+ * same file twice shares one resolve-and-register round trip instead
+ * of paying for it again.
  *
- * So: refcounted, keyed by root path plus path. Acquire returns the
- * URL and increments; release decrements and revokes at zero. The
- * revoke is deferred by a grace period, because React unmounts and
- * remounts a row constantly while scrolling or re-rendering, and a URL
- * revoked between the two shows a broken image for a file that is
- * perfectly present.
- *
- * A URL is a REFERENCE to the file, not a copy of its bytes — the
- * browser streams them when the <img> decodes. What costs memory is the
- * decoded bitmap, which is why the caller, not this module, decides
- * whether a format and a size are worth decoding at all.
- *
- * Nothing here is a thumbnail CACHE. Sidecar thumbnails are ruled out
- * by the read-only rule (conventions §9); this holds handles to files
- * that already exist and writes nothing.
+ * `release` stays, as a no-op, only so the seven existing call sites
+ * (`ShotFrame.tsx`, `AssetThumb.tsx`, `AssetPreview.tsx`,
+ * `AnchorScope.tsx`, and whatever else calls `acquire`) need no
+ * changes at all — the public shape of this module is unchanged even
+ * though nothing it returns needs giving back any more.
  */
 
-import { assetObjectUrl } from "./assetLocator.ts";
+import { invoke } from "@tauri-apps/api/core";
+import { resolvedAbsolutePath } from "./assetLocator.ts";
+
+interface ServerInfo { url: string; token: string }
+
+/** Fetched once for the whole session — every `<img>`/`<video>` the
+ *  window ever shows uses the same loopback server. */
+let serverInfo: Promise<ServerInfo> | null = null;
+function mediaServerInfo(): Promise<ServerInfo> {
+  serverInfo ??= invoke<ServerInfo>("media_server_info");
+  return serverInfo;
+}
 
 interface Entry {
   url: string | null;
-  /** In-flight load, so ten rows appearing at once make one read. */
+  /** In-flight resolve-and-register, so ten rows appearing at once make
+   *  one round trip. */
   pending: Promise<string | null> | null;
-  refs: number;
-  /** `ReturnType<typeof setTimeout>` rather than `number`: this package
-   *  compiles with node types in scope, where the bare timer functions
-   *  return a `Timeout` object. Vitest is happy with `number`; tsc is
-   *  not. */
-  timer: ReturnType<typeof setTimeout> | null;
 }
-
-/**
- * How long a URL survives its last release. Long enough to cover an
- * unmount/remount from a re-render, short enough that scrolling past a
- * folder of plates does not accumulate them.
- */
-const GRACE_MS = 5000;
 
 const entries = new Map<string, Entry>();
 
@@ -53,88 +50,62 @@ function keyFor(root: string | null, path: string): string {
   return `${root ?? "-"}:${path}`;
 }
 
+async function buildUrl(
+  root: string | null, path: string,
+): Promise<string | null> {
+  const absolute = await resolvedAbsolutePath(root, path);
+  if (absolute === null) return null;
+  const [info, handle] = await Promise.all([
+    mediaServerInfo(),
+    invoke<string>("media_register_asset", { path: absolute }),
+  ]);
+  return `${info.url}/media?h=${handle}&t=${info.token}`;
+}
+
 /**
- * Take a reference to this file's object URL, creating it if needed.
+ * This file's media-server URL, creating and caching it if needed.
  *
- * Every successful call must be matched by exactly one `release()` with
- * the same arguments, including the calls that resolve to null — the
- * refcount is what keeps a shared URL alive, and an unbalanced acquire
- * pins a file for the life of the session.
+ * A failed resolution is never cached — a file that is not there yet
+ * (or not any more) may resolve differently next time, and the cost of
+ * retrying is one small round trip, not a decode.
  */
 export async function acquire(
   root: string | null, path: string,
 ): Promise<string | null> {
   const key = keyFor(root, path);
   let entry = entries.get(key);
-
   if (entry === undefined) {
-    entry = { url: null, pending: null, refs: 0, timer: null };
+    entry = { url: null, pending: null };
     entries.set(key, entry);
-  }
-  entry.refs += 1;
-  if (entry.timer !== null) {
-    clearTimeout(entry.timer);
-    entry.timer = null;
   }
   if (entry.url !== null) return entry.url;
 
-  entry.pending ??= assetObjectUrl(root, path);
+  entry.pending ??= buildUrl(root, path);
   const url = await entry.pending;
-
-  // Released while the read was in flight: whoever asked has gone, so
-  // hand back the URL and revoke rather than storing an orphan.
-  const current = entries.get(key);
-  if (current !== entry || entry.refs === 0) {
-    if (url !== null) URL.revokeObjectURL(url);
-    return null;
-  }
-  entry.url = url;
   entry.pending = null;
+  if (url !== null) entry.url = url;
   return url;
 }
 
-/** Give back a reference. Revokes once nothing holds it. */
-export function release(
-  root: string | null, path: string,
-): void {
-  const key = keyFor(root, path);
-  const entry = entries.get(key);
-  if (entry === undefined) return;
-
-  entry.refs = Math.max(0, entry.refs - 1);
-  if (entry.refs > 0 || entry.timer !== null) return;
-
-  // Bare setTimeout rather than window.setTimeout, unlike the rest of
-  // the app: the refcount is the load-bearing part of this module and a
-  // headless test must be able to drive its clock without a DOM.
-  entry.timer = setTimeout(() => {
-    const still = entries.get(key);
-    if (still === undefined) return;
-    // Clear the handle FIRST, before deciding whether to revoke.
-    //
-    // Leaving `timer` set on an entry this call decides NOT to revoke
-    // makes the next release see a non-null timer, take the early exit
-    // above, and never schedule one — the URL then lives for the rest
-    // of the session with nothing holding it. `acquire` also clears a
-    // pending timer, so the two guards can cover for each other and
-    // hide the loss of either.
-    still.timer = null;
-    if (still.refs > 0) return;
-    if (still.url !== null) URL.revokeObjectURL(still.url);
-    entries.delete(key);
-  }, GRACE_MS);
+/**
+ * A documented no-op. Kept only so every existing caller — paired with
+ * `acquire` on the assumption that something must eventually be given
+ * back — needs no change. See the module comment: there is nothing left
+ * to give back.
+ */
+export function release(_root: string | null, _path: string): void {
+  // Intentionally empty.
 }
 
 /**
  * Drop everything. Called when the project closes or its root changes:
- * a URL into the old folder resolves to bytes from a project the user
- * is no longer in, which is a worse failure than a blank thumbnail
- * because it looks like it worked.
+ * a cached URL from the previous folder would otherwise keep resolving
+ * under the new project's identical relative path, serving the wrong
+ * file silently — worse than a blank thumbnail because it looks like it
+ * worked. Nothing needs revoking on the Rust side any more (a handle
+ * stays valid, harmlessly, for the rest of the session); only this
+ * cache needs clearing.
  */
 export function revokeAll(): void {
-  for (const [, entry] of entries) {
-    if (entry.timer !== null) clearTimeout(entry.timer);
-    if (entry.url !== null) URL.revokeObjectURL(entry.url);
-  }
   entries.clear();
 }

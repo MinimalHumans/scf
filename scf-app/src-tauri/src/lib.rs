@@ -20,6 +20,7 @@
 mod files;
 mod mcp_relay;
 mod media;
+mod media_server;
 mod pipe;
 mod sql;
 mod sql_socket;
@@ -303,6 +304,8 @@ pub fn run() {
     }
     let databases = sql::Databases::default();
     let socket = sql_socket::start(databases.clone()).expect("a loopback port for SQL");
+    let (media_server_info, media_handles) =
+        media_server::start().expect("a loopback port for media");
     let relay = mcp_relay::Relay::new();
     let discovery = mcp_relay::start(relay.clone()).expect("a loopback port for the MCP");
     let builder = tauri::Builder::default()
@@ -321,6 +324,8 @@ pub fn run() {
         .manage(TrayUp::default())
         .manage(databases)
         .manage(socket)
+        .manage(media_server_info)
+        .manage(media_handles)
         .manage(relay.clone())
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -409,6 +414,8 @@ pub fn run() {
         mcp_relay::mcp_send,
         mcp_relay::mcp_close,
         media::media_detect_backends,
+        media_server::media_server_info,
+        media_server::media_register_asset,
         sql::file_fingerprint,
         sql_socket::sql_socket,
         files::fs_windows,

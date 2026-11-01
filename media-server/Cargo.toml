@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "media-server"
+version = "0.1.0"
+description = "The media server's loopback HTTP side — passthrough only in Phase 2"
+license = "Apache-2.0"
+edition = "2021"
+rust-version = "1.90"
+
+[dependencies]
+hyper = { version = "1", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = "0.1"
+tokio = { version = "1", features = ["net", "rt", "io-util", "time", "macros"] }
+getrandom = "0.3"
+serde = { version = "1", features = ["derive"] }

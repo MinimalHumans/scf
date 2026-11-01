@@ -90,6 +90,22 @@ export async function readAssetBytes(
   };
 }
 
+/**
+ * `path`'s real, absolute location under `assetRoot`, or null.
+ *
+ * Exported for `objectUrlCache.ts` only: the media server (Phase 2 of
+ * docs/media-server-spec.md) needs the real path to register a handle
+ * for, but that path is never meant to travel any further than the one
+ * Rust command that consumes it — it does not cross into a URL, and
+ * nothing else in the window should be reaching for it.
+ */
+export async function resolvedAbsolutePath(
+  assetRoot: string | null, path: string,
+): Promise<string | null> {
+  if (assetRoot === null) return null;
+  return (await assetAccess()).resolve(assetRoot, `@project/${path}`);
+}
+
 /** An object URL for a resolved asset, or null. Caller revokes it. */
 export async function assetObjectUrl(
   assetRoot: string | null, path: string,

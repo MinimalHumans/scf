@@ -67,6 +67,22 @@ describe("exists", () => {
   });
 });
 
+describe("resolve", () => {
+  test("the real path, for a resolvable identifier", async () => {
+    expect(await access.resolve(dir, "@project/hero.png"))
+      .toBe(join(dir, "hero.png"));
+  });
+  test("null: nothing there, no root, wrong root, escape, absolute",
+      async () => {
+    expect(await access.resolve(dir, "@project/nope.png"))
+      .toBe(join(dir, "nope.png")); // resolve names a path, not a fact
+    expect(await access.resolve(null, "@project/hero.png")).toBeNull();
+    expect(await access.resolve(dir, "@other/hero.png")).toBeNull();
+    expect(await access.resolve(dir, "@project/../hero.png")).toBeNull();
+    expect(await access.resolve(dir, join(dir, "hero.png"))).toBeNull();
+  });
+});
+
 describe("read", () => {
   test("the whole file", async () => {
     const bytes = await access.read(dir, "@project/hero.png");

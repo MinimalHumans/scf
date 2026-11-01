@@ -44,6 +44,13 @@ export interface AssetAccess {
    */
   read(assetRoot: string | null, identifier: string,
        range?: ByteRange): Promise<Uint8Array | null>;
+  /**
+   * `identifier`'s real path under `assetRoot`, or null (see `exists`).
+   * The media server (docs/media-server-spec.md §2) is the one caller
+   * that wants a path rather than bytes — it hands that path to the
+   * window's own filesystem, never back out to the browser.
+   */
+  resolve(assetRoot: string | null, identifier: string): Promise<string | null>;
 }
 
 /** `identifier`'s real path under `assetRoot`, or null if it cannot
@@ -86,6 +93,10 @@ export function createAssetAccess(platform: HostPlatform): AssetAccess {
       } catch {
         return null;
       }
+    },
+
+    async resolve(assetRoot, identifier) {
+      return resolvedPath(platform, assetRoot, identifier);
     },
   };
 }

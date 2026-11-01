@@ -28,8 +28,8 @@
         "script-src": "'self'",
         "style-src": "'self' 'unsafe-inline' https://fonts.googleapis.com",
         "font-src": "'self' data: https://fonts.gstatic.com",
-        "img-src": "'self' blob: data:",
-        "media-src": "'self' blob: data:",
+        "img-src": "'self' blob: data: http://127.0.0.1:*",
+        "media-src": "'self' blob: data: http://127.0.0.1:*",
         "connect-src": "'self' ipc: http://ipc.localhost ws://127.0.0.1:*"
       },
       "dangerousDisableAssetCspModification": ["style-src"]
