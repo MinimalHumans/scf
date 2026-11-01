@@ -2075,6 +2075,11 @@ tr.prop-weak td { opacity: .6; }
 .asset-row-historic .asset-row-name,
 .asset-row-historic .asset-row-id { opacity: .5; }
 .asset-row-cut .asset-row-name { text-decoration: line-through; }
+/* Missing or never-resolvable (assets.ts's `missing`/`out-of-root`) —
+   the same two states that light the Assets nav badge, so a red row
+   here is a row that badge is actually about. */
+.asset-row-broken .asset-row-name,
+.asset-row-broken .asset-row-id { color: var(--blocker); }
 .standing-tag {
   flex: none; font: 10.5px var(--mono); color: var(--paper-dim);
   border: 1px solid var(--line); border-radius: 3px; padding: 0 5px;

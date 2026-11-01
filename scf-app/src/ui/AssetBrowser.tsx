@@ -367,7 +367,15 @@ const PAGE = 300;
 
 export function AssetBrowser(): JSX.Element {
   const { openEntityRow, assetPrefix, setAssetPrefix, assetRoot,
-          assetRootStatus, attachFolder } = useStore();
+          assetRootStatus, attachFolder, assetResolution } = useStore();
+  // The same two states that light the Assets nav badge (ActivityBar.tsx)
+  // — missing or never resolvable — so a row flagged here is a row the
+  // badge is actually about, not a second, disagreeing opinion.
+  const brokenIds = useMemo(() => new Set(
+    (assetResolution?.assets ?? [])
+      .filter((a) => a.state === "missing" || a.state === "out-of-root")
+      .map((a) => a.id)),
+  [assetResolution]);
   const folderPrompt = assetRootStatus === "ok" ? null : (
     <div className={`asset-folder-prompt asset-folder-prompt-${
       assetRootStatus === "missing" ? "blocker" : "warn"}`}>
@@ -527,9 +535,11 @@ fields that hold no JSON.">
         <ul className="asset-list">
           {shown.slice(0, shownCount).map((a) => {
             const standing = standingOf(a);
+            const broken = brokenIds.has(a.id);
             return (
             <li key={a.id} className={"asset-row" +
-              (standing.historic ? ` asset-row-historic asset-row-${standing.kind}` : "")}>
+              (standing.historic ? ` asset-row-historic asset-row-${standing.kind}` : "") +
+              (broken ? " asset-row-broken" : "")}>
               <input type="checkbox" className="asset-row-check"
                      aria-label={`select ${a.name ?? a.id}`}
                      checked={selected.has(a.id)}
@@ -545,6 +555,10 @@ fields that hold no JSON.">
                             void openEntityRow("asset", a.id);
                           }} />
               <button className="ghost tiny asset-row-name"
+                      title={broken
+                        ? "This asset's file is missing or can never " +
+                          "resolve (see its resolution detail below)."
+                        : undefined}
                       onClick={() => { void openEntityRow("asset", a.id); }}>
                 {a.name ?? "unnamed"}
               </button>
