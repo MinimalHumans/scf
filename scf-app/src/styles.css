@@ -2014,9 +2014,12 @@ tr.prop-weak td { opacity: .6; }
   border-top: 1px solid var(--line); font-size: 11.5px;
 }
 .form-resolution-detail { flex-basis: 100%; color: var(--paper-dim); }
-.form-resolution-missing, .form-resolution-out-of-root { color: var(--amber); }
+/* Missing or never-resolvable — the same --blocker red as the Assets
+   nav badge and the asset list (never --amber, which despite its name
+   reads as an informational blue, not a warning). */
+.form-resolution-missing, .form-resolution-out-of-root { color: var(--blocker); }
 .form-resolution-missing .form-resolution-detail,
-.form-resolution-out-of-root .form-resolution-detail { color: var(--amber); }
+.form-resolution-out-of-root .form-resolution-detail { color: var(--blocker); }
 
 /* --- Asset browser (P4) ---------------------------------------------- */
 .asset-browser { display: flex; flex-direction: column; height: 100%; min-height: 0; }
