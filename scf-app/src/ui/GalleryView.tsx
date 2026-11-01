@@ -4,10 +4,14 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { exec, useStore } from "../state/store.ts";
-import { resolveCached } from "../files/thumbnailCache.ts";
+import {
+  resolveCached, galleryPreviewFor, type GalleryPreview,
+} from "../files/thumbnailCache.ts";
 import { useFrameUrl } from "./ShotFrame.tsx";
 import { useRememberedOptions } from "./useRememberedOptions.ts";
 import { step } from "@scf-core/storyboard.ts";
+import { parseIdentifier, type Resolution } from "@scf-core/assets.ts";
+import { LARGE_FILE_BYTES } from "@scf-core/preview.ts";
 import {
   describeUses, FILTER_LABEL, filterItems, loadGallery, presentItems,
   SORT_LABEL, sortItems,
@@ -245,6 +249,7 @@ export function GalleryView(): JSX.Element {
              }}>
           {items.map((it, i) => (
             <Tile key={String(it.asset["id"])} item={it} colWidth={colWidth}
+                  size={opts.size}
                   names={opts.names} onOpen={() => setViewing(i)}
                   missing={states.get(Number(it.asset["id"])) !== "resolved" ||
                            broken.has(Number(it.asset["id"]))}
@@ -278,20 +283,81 @@ function useOnScreen<T extends Element>(): [RefObject<T>, boolean] {
   return [ref, seen];
 }
 
-function Tile({ item, colWidth, names, onOpen, missing, onBroken }: {
-  item: GalleryItem; colWidth: number; names: boolean; onOpen: () => void;
+function Tile({ item, colWidth, names, size, onOpen, missing, onBroken }: {
+  item: GalleryItem; colWidth: number; names: boolean;
+  /** The gallery's column tier, so the generated preview matches it. */
+  size: "s" | "m" | "l";
+  onOpen: () => void;
   /** Shown only when missing files are asked for: marked as such. */
   missing: boolean;
   /** The file resolved but would not load or decode. */
   onBroken: () => void;
 }): JSX.Element {
+  const { assetRoot, environmentRevision } = useStore();
+  const root = assetRoot;
   const [ref, seen] = useOnScreen<HTMLButtonElement>();
   const identifier = typeof item.asset["identifier"] === "string"
     ? item.asset["identifier"] : null;
-  const visual = item.kind === "image" || item.kind === "video";
-  const url = useFrameUrl(seen && visual ? identifier : null, ["image", "video"]);
-  // Until the picture says its shape, assume 4:3.
+  const parsed = identifier === null ? null : parseIdentifier(identifier);
+  const isImage = item.kind === "image";
+  const isVideo = item.kind === "video";
+  const visual = isImage || isVideo;
+
+  // Images: a small, cached, aspect-preserving preview — the same
+  // persistent-raster approach as `AssetThumb`, not a read of the
+  // whole file. A gallery can hold hundreds of plates on screen across
+  // a scroll session, and re-reading each one in full on every mount
+  // is what made this view lag.
+  const [resolution, setResolution] = useState<Resolution | null>(null);
+  useEffect(() => {
+    if (!seen || identifier === null || !isImage) return;
+    let cancelled = false;
+    void resolveCached(root, identifier, environmentRevision).then((r) => {
+      if (!cancelled) setResolution(r);
+    });
+    return () => { cancelled = true; };
+  }, [seen, identifier, root, environmentRevision, isImage]);
+
+  const drawable = isImage && resolution?.state === "resolved" &&
+    (resolution.sizeBytes ?? 0) <= LARGE_FILE_BYTES;
+
+  const [preview, setPreview] = useState<GalleryPreview | null>(null);
+  // Separate from `preview === null`, which is also true while
+  // generation is still in flight — without this, the format chip
+  // (meant for "nothing to show") flashed on every image for as long
+  // as the read-and-downscale took, instead of only on genuine failure.
+  const [previewFailed, setPreviewFailed] = useState(false);
+  useEffect(() => {
+    setPreview(null);
+    setPreviewFailed(false);
+    if (!drawable || parsed === null || resolution === null) return;
+    let cancelled = false;
+    void galleryPreviewFor(root, parsed.path, resolution, size).then((p) => {
+      if (cancelled) return;
+      if (p === null) { setPreviewFailed(true); onBroken(); return; }
+      setPreview(p);
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawable, parsed?.path, root, resolution, size]);
+
+  // True while an image is known to be on its way but isn't drawn yet:
+  // still resolving, or resolved and drawable but not yet generated.
+  // The chip is for "nothing will ever be shown here", not "not yet".
+  const imagePending = isImage && !previewFailed &&
+    (resolution === null || (drawable && preview === null));
+
+  // Video has no cheap client-side downscale (no decoder short of
+  // reading the file), so it keeps the full-file path for now — see
+  // docs/media-server-spec.md's thumbnail profile for the real fix.
+  const videoUrl = useFrameUrl(seen && isVideo ? identifier : null, ["video"]);
+
+  // Until a picture says its shape, assume 4:3.
   const [aspect, setAspect] = useState(4 / 3);
+  useEffect(() => {
+    if (preview !== null) setAspect(preview.width / preview.height);
+  }, [preview]);
+
   const shown = visual ? aspect : 2;
   const caption = names ? 22 : 0;
   const span = Math.ceil((colWidth / shown + caption + GAP_PX) / ROW_PX);
@@ -304,15 +370,12 @@ function Tile({ item, colWidth, names, onOpen, missing, onBroken }: {
             onClick={onOpen}
             title={`${name}\n${describeUses(item.uses).join("\n") || "Not used by anything"}`}>
       <div className="gl-pic" style={{ aspectRatio: String(shown) }}>
-        {url !== null && item.kind === "image" && (
-          <img src={url} alt={name} decoding="async" onError={onBroken}
-               onLoad={(e) => {
-                 const im = e.currentTarget;
-                 if (im.naturalWidth > 0) setAspect(im.naturalWidth / im.naturalHeight);
-               }} />
+        {preview !== null && isImage && (
+          <img src={preview.dataUrl} alt={name} decoding="async"
+               onError={onBroken} />
         )}
-        {url !== null && item.kind === "video" && (
-          <video src={url} muted loop playsInline preload="metadata"
+        {videoUrl !== null && isVideo && (
+          <video src={videoUrl} muted loop playsInline preload="metadata"
                  onError={onBroken}
                  onLoadedMetadata={(e) => {
                    const v = e.currentTarget;
@@ -321,7 +384,7 @@ function Tile({ item, colWidth, names, onOpen, missing, onBroken }: {
                  onMouseEnter={(e) => void e.currentTarget.play().catch(() => {})}
                  onMouseLeave={(e) => e.currentTarget.pause()} />
         )}
-        {url === null && (
+        {preview === null && videoUrl === null && !imagePending && (
           <span className="gl-chip">
             {(String(identifier ?? name).split(".").pop() ?? "").slice(0, 5)}
           </span>

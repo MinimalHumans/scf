@@ -324,3 +324,130 @@ export async function thumbnailFor(
   inFlight.set(key, job);
   return job;
 }
+
+/* ── Gallery previews ─────────────────────────────────────────────
+ * The masonry wall shows each picture at its own shape (each tile
+ * spans rows by its own aspect ratio), so these are resized, never
+ * cover-cropped to a square like `thumbnailFor`'s.
+ *
+ * Three fixed sizes, matching the gallery's own column tiers, rather
+ * than one per window width: a continuously-sized cache turns every
+ * resize into a new entry, and makes "how much space is this using"
+ * an unanswerable question (the same reasoning as the media server's
+ * fixed preview presets, docs/media-server-spec.md).
+ */
+
+export type GalleryTier = "s" | "m" | "l";
+
+/** Twice the CSS column width (`GalleryView.tsx`'s `COLUMN_PX`), for
+ *  HiDPI. */
+const GALLERY_PX: Record<GalleryTier, number> = { s: 340, m: 500, l: 760 };
+
+export interface GalleryPreview {
+  dataUrl: string;
+  width: number;
+  height: number;
+}
+
+const galleryMemory = new Map<string, GalleryPreview>();
+const galleryInFlight = new Map<string, Promise<GalleryPreview | null>>();
+
+function rememberGallery(key: string, value: GalleryPreview): void {
+  galleryMemory.delete(key);
+  galleryMemory.set(key, value);
+  while (galleryMemory.size > MEMORY_LIMIT) {
+    const oldest = galleryMemory.keys().next();
+    if (oldest.done === true) break;
+    galleryMemory.delete(oldest.value);
+  }
+}
+
+function galleryKeyFor(
+  root: string | null, path: string, r: Resolution, tier: GalleryTier,
+): string {
+  const stamp = `${r.mtime ?? "?"}:${r.sizeBytes ?? "?"}`;
+  return `gl|${root ?? "-"}|${path}|${stamp}|${tier}`;
+}
+
+/** Downscaled to the tier's width, aspect kept, never cropped. The
+ *  decoder downscales AS it decodes (`resizeWidth`), so a large plate
+ *  never exists as a full bitmap. */
+async function drawGallery(
+  bytes: Uint8Array, maxPx: number,
+): Promise<GalleryPreview | null> {
+  const blob = new Blob([new Uint8Array(bytes)]);
+  let source: ImageBitmap | null = null;
+  try {
+    source = await createImageBitmap(blob, {
+      resizeWidth: maxPx, resizeQuality: "high",
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = source.width;
+    canvas.height = source.height;
+    const ctx = canvas.getContext("2d");
+    if (ctx === null) return null;
+    ctx.drawImage(source, 0, 0);
+    return {
+      dataUrl: canvas.toDataURL(THUMB_TYPE, THUMB_QUALITY),
+      width: source.width, height: source.height,
+    };
+  } catch {
+    // A corrupt or unsupported image; the caller falls back the same
+    // way `thumbnailFor`'s callers do.
+    return null;
+  } finally {
+    source?.close();
+  }
+}
+
+/**
+ * A gallery preview for a resolved image asset: memory, then
+ * IndexedDB, then the file. Null when there is nothing drawable.
+ *
+ * Width and height travel with the persisted entry (JSON rather than
+ * a bare data URL) so a cache hit sizes the masonry tile without
+ * decoding anything.
+ */
+export async function galleryPreviewFor(
+  root: string | null,
+  path: string,
+  resolution: Resolution,
+  tier: GalleryTier,
+): Promise<GalleryPreview | null> {
+  const key = galleryKeyFor(root, path, resolution, tier);
+
+  const cached = galleryMemory.get(key);
+  if (cached !== undefined) {
+    rememberGallery(key, cached);
+    return cached;
+  }
+
+  const running = galleryInFlight.get(key);
+  if (running !== undefined) return running;
+
+  const job = (async (): Promise<GalleryPreview | null> => {
+    const stored = await readStored(key);
+    if (stored !== null) {
+      try {
+        const value = JSON.parse(stored) as GalleryPreview;
+        rememberGallery(key, value);
+        return value;
+      } catch {
+        // Fall through and regenerate rather than fail on a corrupt
+        // or pre-this-change entry.
+      }
+    }
+
+    const bytes = await fileAt(root, path);
+    if (bytes === null) return null;
+    const drawn = await drawGallery(bytes, GALLERY_PX[tier]);
+    if (drawn === null) return null;
+
+    rememberGallery(key, drawn);
+    writeStored(key, JSON.stringify(drawn));
+    return drawn;
+  })().finally(() => galleryInFlight.delete(key));
+
+  galleryInFlight.set(key, job);
+  return job;
+}
