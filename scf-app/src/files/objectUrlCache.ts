@@ -22,6 +22,10 @@
  * `AnchorScope.tsx`, and whatever else calls `acquire`) need no
  * changes at all — the public shape of this module is unchanged even
  * though nothing it returns needs giving back any more.
+ *
+ * Phase 3 adds `acquireMeta`, over the same cached (handle, server
+ * info) pair `acquire` uses — an asset already shown in a preview does
+ * not pay for a second registration just to also ask `/meta` about it.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -37,11 +41,13 @@ function mediaServerInfo(): Promise<ServerInfo> {
   return serverInfo;
 }
 
+interface Registered { handle: string; info: ServerInfo }
+
 interface Entry {
-  url: string | null;
+  value: Registered | null;
   /** In-flight resolve-and-register, so ten rows appearing at once make
    *  one round trip. */
-  pending: Promise<string | null> | null;
+  pending: Promise<Registered | null> | null;
 }
 
 const entries = new Map<string, Entry>();
@@ -50,41 +56,90 @@ function keyFor(root: string | null, path: string): string {
   return `${root ?? "-"}:${path}`;
 }
 
-async function buildUrl(
+async function register(
   root: string | null, path: string,
-): Promise<string | null> {
+): Promise<Registered | null> {
   const absolute = await resolvedAbsolutePath(root, path);
   if (absolute === null) return null;
   const [info, handle] = await Promise.all([
     mediaServerInfo(),
     invoke<string>("media_register_asset", { path: absolute }),
   ]);
-  return `${info.url}/media?h=${handle}&t=${info.token}`;
+  return { handle, info };
 }
 
 /**
- * This file's media-server URL, creating and caching it if needed.
+ * The (handle, server info) pair for this file, resolving and
+ * registering it if needed and caching the result.
  *
  * A failed resolution is never cached — a file that is not there yet
  * (or not any more) may resolve differently next time, and the cost of
  * retrying is one small round trip, not a decode.
  */
-export async function acquire(
+async function acquireEntry(
   root: string | null, path: string,
-): Promise<string | null> {
+): Promise<Registered | null> {
   const key = keyFor(root, path);
   let entry = entries.get(key);
   if (entry === undefined) {
-    entry = { url: null, pending: null };
+    entry = { value: null, pending: null };
     entries.set(key, entry);
   }
-  if (entry.url !== null) return entry.url;
+  if (entry.value !== null) return entry.value;
 
-  entry.pending ??= buildUrl(root, path);
-  const url = await entry.pending;
+  entry.pending ??= register(root, path);
+  const value = await entry.pending;
   entry.pending = null;
-  if (url !== null) entry.url = url;
-  return url;
+  if (value !== null) entry.value = value;
+  return value;
+}
+
+/** This file's media-server URL, creating and caching it if needed. */
+export async function acquire(
+  root: string | null, path: string,
+): Promise<string | null> {
+  const r = await acquireEntry(root, path);
+  return r === null ? null : `${r.info.url}/media?h=${r.handle}&t=${r.info.token}`;
+}
+
+/** Mirrors `media-core`'s `ProbeResult`/`Verdict` (Phase 3 — see
+ *  `media-server/src/serve.rs`'s `/meta` route). All of `probe`'s
+ *  fields are `null` rather than absent when ffprobe couldn't tell —
+ *  a video with no audio track, say — never an error on their own. */
+export interface AssetMeta {
+  probe: {
+    container: string | null;
+    videoCodec: string | null;
+    audioCodec: string | null;
+    width: number | null;
+    height: number | null;
+    durationSecs: number | null;
+    fps: number | null;
+  };
+  verdict: "passthrough" | "remux" | "transcode" | "unsupported";
+}
+
+/**
+ * Real probed facts for this file — resolution, duration, codec — and
+ * an informational verdict, via the media server's `/meta` route. Null
+ * when the file doesn't resolve, ffprobe isn't configured, or ffprobe
+ * couldn't read it (not a media file, corrupt) — all three are quiet
+ * "nothing to show" cases here, not thrown errors; the caller (`Asset
+ * FileFacts.tsx`) decides what, if anything, to say about their
+ * absence.
+ */
+export async function acquireMeta(
+  root: string | null, path: string,
+): Promise<AssetMeta | null> {
+  const r = await acquireEntry(root, path);
+  if (r === null) return null;
+  try {
+    const res = await fetch(`${r.info.url}/meta?h=${r.handle}&t=${r.info.token}`);
+    if (!res.ok) return null;
+    return await res.json() as AssetMeta;
+  } catch {
+    return null;
+  }
 }
 
 /**

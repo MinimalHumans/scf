@@ -5,9 +5,10 @@
 //! [`start`] returns into a running task, mirroring `sql_socket.rs`'s
 //! shape without this crate depending on Tauri's runtime.
 //!
-//! Phase 2 only: raw passthrough with Range support, token and Host
-//! checks. No probing, no conversion, no queue — see the spec's phase
-//! list and the plan this was built from.
+//! `/media` is raw passthrough with Range support (Phase 2). `/meta`
+//! adds ffprobe-based technical facts and an informational verdict —
+//! video/audio only, nothing acted on yet (Phase 3). No conversion, no
+//! queue — see the spec's phase list and the plan this was built from.
 
 mod handles;
 mod serve;
@@ -39,20 +40,30 @@ fn new_token() -> String {
 
 /// Binds a free loopback port and returns the info the frontend needs,
 /// the shared handle registry (so the caller can expose a "register"
-/// command over it), and the accept loop as a bare future. The caller
+/// command over it), the shared capability-report registry (so the
+/// caller can expose a "report" command over it — `backends` is passed
+/// in rather than returned, since the Phase 1 detection command already
+/// owns that one), and the accept loop as a bare future. The caller
 /// decides how to drive that future — `tauri::async_runtime::spawn` in
 /// the app, a plain `tokio::spawn` for any other host, per the spec's
 /// own note that this crate is the seam a differently-hosted media
 /// server reuses.
-pub fn start() -> std::io::Result<(ServerInfo, Handles, impl Future<Output = ()>)> {
+pub fn start(
+    backends: media_core::Backends,
+) -> std::io::Result<(ServerInfo, Handles, media_core::Capabilities, impl Future<Output = ()>)> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
     let token = new_token();
     let handles = Handles::default();
+    let capabilities = media_core::Capabilities::default();
+    let probe_cache = media_core::ProbeCache::default();
 
     let info = ServerInfo { url: format!("http://127.0.0.1:{port}"), token: token.clone() };
-    let ctx = serve::Context { port, token, handles: handles.clone() };
+    let ctx = serve::Context {
+        port, token, handles: handles.clone(), backends,
+        capabilities: capabilities.clone(), probe_cache,
+    };
 
     let accept = async move {
         let listener = TcpListener::from_std(listener).expect("loopback listener");
@@ -71,5 +82,5 @@ pub fn start() -> std::io::Result<(ServerInfo, Handles, impl Future<Output = ()>
         }
     };
 
-    Ok((info, handles, accept))
+    Ok((info, handles, capabilities, accept))
 }

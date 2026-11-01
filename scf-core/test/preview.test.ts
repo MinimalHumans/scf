@@ -10,7 +10,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { listAssets } from "../src/assetIndex.ts";
-import { previewCapability } from "../src/preview.ts";
+import { PROBEABLE, previewCapability } from "../src/preview.ts";
 import { openNodeDatabase, type NodeDatabase } from "../src/node.ts";
 import { FIXTURE_PATH } from "./setup.ts";
 
@@ -64,6 +64,25 @@ describe("previewCapability", () => {
 
   test("another .scf is named, not treated as media", () => {
     expect(previewCapability("scf").detail).toContain("layers");
+  });
+});
+
+describe("PROBEABLE", () => {
+  test("includes native video/audio and decoded-tier containers alike",
+    () => {
+    // A decoded-tier .mov is exactly the case probing exists for — the
+    // browser can't play it, but ffprobe can still say what it is.
+    expect(PROBEABLE).toContain("mp4");
+    expect(PROBEABLE).toContain("wav");
+    expect(PROBEABLE).toContain("mov");
+    expect(PROBEABLE).toContain("mxf");
+  });
+
+  test("still images are absent — that is Phase 5's oiiotool/magick job",
+    () => {
+    expect(PROBEABLE).not.toContain("exr");
+    expect(PROBEABLE).not.toContain("psd");
+    expect(PROBEABLE).not.toContain("tiff");
   });
 });
 

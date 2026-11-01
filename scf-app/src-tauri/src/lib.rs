@@ -304,8 +304,10 @@ pub fn run() {
     }
     let databases = sql::Databases::default();
     let socket = sql_socket::start(databases.clone()).expect("a loopback port for SQL");
-    let (media_server_info, media_handles) =
-        media_server::start().expect("a loopback port for media");
+    let media_backends = media_core::Backends::default();
+    media::detect_at_startup(media_backends.clone());
+    let (media_server_info, media_handles, media_capabilities) =
+        media_server::start(media_backends.clone()).expect("a loopback port for media");
     let relay = mcp_relay::Relay::new();
     let discovery = mcp_relay::start(relay.clone()).expect("a loopback port for the MCP");
     let builder = tauri::Builder::default()
@@ -324,8 +326,10 @@ pub fn run() {
         .manage(TrayUp::default())
         .manage(databases)
         .manage(socket)
+        .manage(media_backends)
         .manage(media_server_info)
         .manage(media_handles)
+        .manage(media_capabilities)
         .manage(relay.clone())
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -416,6 +420,7 @@ pub fn run() {
         media::media_detect_backends,
         media_server::media_server_info,
         media_server::media_register_asset,
+        media_server::media_report_capabilities,
         sql::file_fingerprint,
         sql_socket::sql_socket,
         files::fs_windows,

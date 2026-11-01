@@ -47,20 +47,32 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-const { acquire, release, revokeAll } =
+const { acquire, acquireMeta, release, revokeAll } =
   await import("../src/files/objectUrlCache.ts");
 
 const ROOT = "/projects/a";
 const OTHER = "/projects/b";
+
+const fetchCalls = vi.hoisted(() => ({ urls: [] as string[], ok: true, body: {} as unknown }));
 
 beforeEach(() => {
   resolves.count = 0;
   resolves.fail = false;
   registers.count = 0;
   infoCalls.count = 0;
+  fetchCalls.urls = [];
+  fetchCalls.ok = true;
+  fetchCalls.body = { probe: { container: "mov" }, verdict: "passthrough" };
+  vi.stubGlobal("fetch", async (url: string) => {
+    fetchCalls.urls.push(url);
+    return {
+      ok: fetchCalls.ok,
+      json: async () => fetchCalls.body,
+    };
+  });
 });
 
-afterEach(() => { revokeAll(); });
+afterEach(() => { revokeAll(); vi.unstubAllGlobals(); });
 
 describe("objectUrlCache", () => {
   test("two holders of one file share a single resolve-and-register",
@@ -141,5 +153,41 @@ describe("objectUrlCache", () => {
     await acquire(ROOT, "assets/x.png");
     expect(resolves.count).toBe(2);
     expect(registers.count).toBe(2);
+  });
+});
+
+describe("acquireMeta", () => {
+  test("fetches /meta on the same origin, handle and token as /media",
+       async () => {
+    const result = await acquireMeta(ROOT, "assets/x.mov");
+    expect(fetchCalls.urls).toHaveLength(1);
+    expect(fetchCalls.urls[0]).toMatch(
+      /^http:\/\/127\.0\.0\.1:4321\/meta\?h=handle-.+&t=tok$/);
+    expect(result).toEqual({ probe: { container: "mov" }, verdict: "passthrough" });
+  });
+
+  test("shares the registration an earlier acquire already made",
+       async () => {
+    await acquire(ROOT, "assets/x.mov");
+    await acquireMeta(ROOT, "assets/x.mov");
+    expect(resolves.count).toBe(1);
+    expect(registers.count).toBe(1);
+  });
+
+  test("a non-ok response is null, not a thrown error", async () => {
+    fetchCalls.ok = false;
+    expect(await acquireMeta(ROOT, "assets/x.mov")).toBeNull();
+  });
+
+  test("an identifier that does not resolve never reaches fetch",
+       async () => {
+    resolves.fail = true;
+    expect(await acquireMeta(ROOT, "assets/gone.mov")).toBeNull();
+    expect(fetchCalls.urls).toHaveLength(0);
+  });
+
+  test("a network failure is null, not a thrown error", async () => {
+    vi.stubGlobal("fetch", async () => { throw new Error("offline"); });
+    expect(await acquireMeta(ROOT, "assets/x.mov")).toBeNull();
   });
 });

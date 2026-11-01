@@ -92,6 +92,21 @@ const NAMED: Record<string, string> = {
 };
 
 /**
+ * Worth asking the media server's `/meta` route about (docs/
+ * media-server-spec.md §5's probe step, Phase 3) — video and audio
+ * containers `ffprobe` can read regardless of whether the browser can
+ * play them. Orthogonal to the tiers above: a `decoded`-tier `.mov` is
+ * exactly the case probing exists for, so this list is not a subset of
+ * `VIDEO`/`AUDIO`. Still images (EXR, TIFF, PSD) are Phase 5's job —
+ * `oiiotool`/`magick`, not `ffprobe` — and are deliberately absent.
+ */
+export const PROBEABLE = [
+  ...VIDEO, ...AUDIO,
+  "mov", "mxf", "mkv", "avi", "wmv", "m4v", "mts", "r3d", "ari",
+  "aif", "aiff",
+];
+
+/**
  * What can be done with these bytes, from the identifier alone.
  *
  * An unknown extension is `named` rather than `native`: guessing and

@@ -2111,6 +2111,7 @@ name = "media-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2121,7 +2122,9 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "media-core",
  "serde",
+ "serde_json",
  "tokio",
 ]
 

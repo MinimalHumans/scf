@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The HTTP side: token and Host checks, routing, and Range-aware file
-//! serving (docs/media-server-spec.md §4-§5 — passthrough only. Phase 2
-//! has no probing, no conversion and no queue; every request is either
-//! "here are the bytes" or a plain rejection).
+//! The HTTP side: token and Host checks, routing, Range-aware file
+//! serving for `/media` (docs/media-server-spec.md §4-§5, Phase 2), and
+//! ffprobe-based facts plus an informational verdict for `/meta`
+//! (video/audio only, Phase 3 — see the plan). Neither route does any
+//! conversion; there is still no queue.
 
 use std::convert::Infallible;
 use std::fs::File;
@@ -20,6 +21,9 @@ pub struct Context {
     pub port: u16,
     pub token: String,
     pub handles: Handles,
+    pub backends: media_core::Backends,
+    pub capabilities: media_core::Capabilities,
+    pub probe_cache: media_core::ProbeCache,
 }
 
 type Res = Response<Full<Bytes>>;
@@ -64,28 +68,90 @@ fn host_ok(req: &Request<Incoming>, ctx: &Context) -> bool {
         .is_some_and(|h| h == expected)
 }
 
+/// Reflects the request's own `Origin` back as `Access-Control-Allow-
+/// Origin`, so `fetch("/meta", ...)` works from the webview — whose
+/// origin is `http://localhost:5173` in `tauri dev` but the app's own
+/// custom-protocol origin in a production build, so no single hardcoded
+/// value covers both. Safe to reflect unconditionally here because the
+/// token and `Host` checks above are the real access control; CORS is
+/// only ever in the way of a browser's *own* page reading a response it
+/// already received, not a way to reach this server from elsewhere —
+/// a request without the right token never gets this far regardless of
+/// its `Origin`.
+fn with_cors(mut res: Res, origin: Option<&str>) -> Res {
+    if let Some(origin) = origin {
+        if let Ok(value) = hyper::header::HeaderValue::from_str(origin) {
+            res.headers_mut().insert(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+        }
+    }
+    res
+}
+
 pub async fn handle(req: Request<Incoming>, ctx: Context) -> Result<Res, Infallible> {
-    if !host_ok(&req, &ctx) {
-        return Ok(text(StatusCode::FORBIDDEN, "wrong host"));
-    }
-    if !authorized(&req, &ctx) {
-        return Ok(text(StatusCode::FORBIDDEN, "missing or wrong token"));
-    }
-    if req.uri().path() != "/media" {
-        return Ok(text(StatusCode::NOT_FOUND, "no such route"));
-    }
-    let Some(handle) = query_param(req.uri().query().unwrap_or(""), "h") else {
-        return Ok(text(StatusCode::BAD_REQUEST, "missing h"));
-    };
-    let Some(path) = ctx.handles.resolve(handle) else {
-        return Ok(text(StatusCode::NOT_FOUND, "unknown or stale handle"));
-    };
-    let range_header = req
+    let origin = req
         .headers()
-        .get(hyper::header::RANGE)
+        .get(hyper::header::ORIGIN)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    Ok(serve_file(Path::new(&path), range_header.as_deref()))
+
+    let res = handle_inner(req, &ctx).await;
+    Ok(with_cors(res, origin.as_deref()))
+}
+
+async fn handle_inner(req: Request<Incoming>, ctx: &Context) -> Res {
+    if !host_ok(&req, ctx) {
+        return text(StatusCode::FORBIDDEN, "wrong host");
+    }
+    if !authorized(&req, ctx) {
+        return text(StatusCode::FORBIDDEN, "missing or wrong token");
+    }
+    let route = req.uri().path().to_string();
+    let Some(handle) = query_param(req.uri().query().unwrap_or(""), "h") else {
+        return text(StatusCode::BAD_REQUEST, "missing h");
+    };
+    let Some(path) = ctx.handles.resolve(handle) else {
+        return text(StatusCode::NOT_FOUND, "unknown or stale handle");
+    };
+    match route.as_str() {
+        "/media" => {
+            let range_header = req
+                .headers()
+                .get(hyper::header::RANGE)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            serve_file(Path::new(&path), range_header.as_deref())
+        }
+        "/meta" => serve_meta(ctx, Path::new(&path)),
+        _ => text(StatusCode::NOT_FOUND, "no such route"),
+    }
+}
+
+fn json(status: StatusCode, body: &serde_json::Value) -> Res {
+    Response::builder()
+        .status(status)
+        .header(hyper::header::CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(body.to_string())))
+        .unwrap()
+}
+
+/// ffprobe-based facts and an informational verdict for the file a
+/// handle resolves to. Video/audio only (Phase 3's scope) — a still
+/// image handle probes fine as "nothing ffprobe could identify" and
+/// comes back `Unsupported`, which is an honest, if uninformative,
+/// answer until Phase 5's still pipeline exists.
+fn serve_meta(ctx: &Context, path: &Path) -> Res {
+    let Some(ffprobe) = ctx.backends.get("ffprobe") else {
+        return json(StatusCode::SERVICE_UNAVAILABLE, &serde_json::json!({
+            "error": "ffprobe is not configured — see Settings \u{2192} Backends",
+        }));
+    };
+    match ctx.probe_cache.probe(&ffprobe, path) {
+        Ok(result) => {
+            let verdict = media_core::classify(&result, &ctx.capabilities, &ctx.backends);
+            json(StatusCode::OK, &serde_json::json!({ "probe": result, "verdict": verdict }))
+        }
+        Err(e) => json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({ "error": e })),
+    }
 }
 
 fn mime_for(path: &Path) -> &'static str {
@@ -324,5 +390,80 @@ mod tests {
         let missing = std::env::temp_dir().join("media-server-test-definitely-missing.bin");
         let res = serve_file(&missing, None);
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    fn test_ctx(backends: media_core::Backends) -> Context {
+        Context {
+            port: 0,
+            token: "tok".to_string(),
+            handles: Handles::default(),
+            backends,
+            capabilities: media_core::Capabilities::default(),
+            probe_cache: media_core::ProbeCache::default(),
+        }
+    }
+
+    #[test]
+    fn with_cors_reflects_the_request_origin() {
+        let res = with_cors(text(StatusCode::OK, "ok"), Some("http://localhost:5173"));
+        assert_eq!(
+            res.headers().get(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN).unwrap(),
+            "http://localhost:5173"
+        );
+    }
+
+    #[test]
+    fn with_cors_adds_nothing_without_an_origin_header() {
+        let res = with_cors(text(StatusCode::OK, "ok"), None);
+        assert!(res.headers().get(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+    }
+
+    #[tokio::test]
+    async fn meta_with_no_ffprobe_configured_is_503() {
+        let ctx = test_ctx(media_core::Backends::default());
+        let res = serve_meta(&ctx, Path::new("whatever.mp4"));
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = String::from_utf8(body_bytes(res).await).unwrap();
+        assert!(body.contains("ffprobe"), "body was: {body}");
+    }
+
+    /// Exercises the real `ffprobe` on this machine, end to end:
+    /// generate a tiny real video with `ffmpeg`, probe it, classify it.
+    /// Ignored by default (CI has none of these tools) — run with
+    /// `cargo test -p media-server -- --ignored`.
+    #[tokio::test]
+    #[ignore = "depends on this machine's installed backends"]
+    async fn meta_probes_a_real_video_end_to_end() {
+        let statuses = media_core::detect_all(&std::collections::HashMap::new());
+        let ffmpeg = statuses.iter().find(|s| s.id == "ffmpeg" && s.ok)
+            .and_then(|s| s.path.clone());
+        let ffprobe = statuses.iter().find(|s| s.id == "ffprobe" && s.ok)
+            .and_then(|s| s.path.clone());
+        let (Some(ffmpeg), Some(ffprobe)) = (ffmpeg, ffprobe) else {
+            eprintln!("skipping: no real ffmpeg/ffprobe found on this machine");
+            return;
+        };
+
+        let out = std::env::temp_dir().join("media-server-test-real.mp4");
+        let status = std::process::Command::new(&ffmpeg)
+            .args(["-y", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=5:duration=1",
+                   "-pix_fmt", "yuv420p"])
+            .arg(&out)
+            .status()
+            .expect("could not run ffmpeg to build the fixture");
+        assert!(status.success());
+
+        let backends = media_core::Backends::default();
+        backends.set("ffmpeg", Some(std::path::PathBuf::from(ffmpeg)));
+        backends.set("ffprobe", Some(std::path::PathBuf::from(ffprobe)));
+        let ctx = test_ctx(backends);
+
+        let res = serve_meta(&ctx, &out);
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(body_bytes(res).await).unwrap();
+        assert!(body.contains("\"videoCodec\""), "body was: {body}");
+        assert!(body.contains("\"verdict\""), "body was: {body}");
+
+        let _ = std::fs::remove_file(&out);
     }
 }

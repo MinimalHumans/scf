@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-//! media-core — discovery and validation of the media server's external
-//! backends (docs/media-server-spec.md §3), Phase 1 only.
+//! media-core — backend discovery/validation (Phase 1), and probing +
+//! verdicts (Phase 3) for the media server (docs/media-server-spec.md
+//! §2, §3, §5).
 //!
 //! No Tauri or webview dependency, deliberately: this is the seam a
 //! standalone, differently-hosted media server (the spec's own future —
@@ -10,12 +11,21 @@
 //! table, and this crate only ever receives an override as a plain
 //! argument, never reaches for it itself.
 
+mod backends;
+mod capabilities;
 mod discover;
+mod probe;
 mod validate;
+mod verdict;
 
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+pub use backends::Backends;
+pub use capabilities::Capabilities;
+pub use probe::{probe, ProbeCache, ProbeResult};
+pub use verdict::{classify, Verdict};
 
 /// The four backends the spec names (§3). `ALL` is the detection order
 /// shown in Settings, not a priority order for dispatch — there is no
