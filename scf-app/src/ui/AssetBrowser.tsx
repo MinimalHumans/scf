@@ -557,7 +557,7 @@ fields that hold no JSON.">
               <button className="ghost tiny asset-row-name"
                       title={broken
                         ? "This asset's file is missing or can never " +
-                          "resolve (see its resolution detail below)."
+                          "resolve — open it to see why."
                         : undefined}
                       onClick={() => { void openEntityRow("asset", a.id); }}>
                 {a.name ?? "unnamed"}
