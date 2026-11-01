@@ -2,7 +2,7 @@
 [package]
 name = "media-core"
 version = "0.1.0"
-description = "Backend discovery/validation, probing and verdicts for the media server"
+description = "Backend discovery/validation, probing, verdicts, cache and conversion for the media server"
 license = "Apache-2.0"
 edition = "2021"
 rust-version = "1.90"
@@ -10,3 +10,5 @@ rust-version = "1.90"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+getrandom = "0.3"

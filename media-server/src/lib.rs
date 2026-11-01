@@ -5,15 +5,19 @@
 //! [`start`] returns into a running task, mirroring `sql_socket.rs`'s
 //! shape without this crate depending on Tauri's runtime.
 //!
-//! `/media` is raw passthrough with Range support (Phase 2). `/meta`
-//! adds ffprobe-based technical facts and an informational verdict —
-//! video/audio only, nothing acted on yet (Phase 3). No conversion, no
-//! queue — see the spec's phase list and the plan this was built from.
+//! `/media` is raw passthrough with Range support (Phase 2), now
+//! branching on a probe+verdict for anything ffprobe can read: a
+//! cache hit is served, a miss is queued and answered `202` (Phase 4).
+//! `/meta` adds ffprobe-based technical facts and the same verdict,
+//! informationally, for `AssetFileFacts` (Phase 3). Still images are
+//! out of scope throughout — Phase 5.
 
 mod handles;
+mod queue;
 mod serve;
 
 use std::future::Future;
+use std::path::PathBuf;
 
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
@@ -24,6 +28,7 @@ use serde::Serialize;
 use tokio::net::TcpListener;
 
 pub use handles::Handles;
+pub use queue::Queue;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +55,7 @@ fn new_token() -> String {
 /// server reuses.
 pub fn start(
     backends: media_core::Backends,
+    cache_dir: PathBuf,
 ) -> std::io::Result<(ServerInfo, Handles, media_core::Capabilities, impl Future<Output = ()>)> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
@@ -58,11 +64,14 @@ pub fn start(
     let handles = Handles::default();
     let capabilities = media_core::Capabilities::default();
     let probe_cache = media_core::ProbeCache::default();
+    let cache = media_core::Cache::open(cache_dir.join("media"))
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let queue = Queue::new(cache);
 
     let info = ServerInfo { url: format!("http://127.0.0.1:{port}"), token: token.clone() };
     let ctx = serve::Context {
         port, token, handles: handles.clone(), backends,
-        capabilities: capabilities.clone(), probe_cache,
+        capabilities: capabilities.clone(), probe_cache, queue,
     };
 
     let accept = async move {

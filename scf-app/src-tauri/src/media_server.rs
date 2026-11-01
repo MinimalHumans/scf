@@ -13,9 +13,13 @@ use media_server::{Handles, ServerInfo};
 /// Bind the server and spawn its accept loop. Call once, at startup,
 /// same as `sql_socket::start`. `backends` is shared with `media.rs`'s
 /// detection command — `/meta` reads the same "currently known good
-/// paths" the Settings dialog shows, never its own copy.
-pub fn start(backends: Backends) -> std::io::Result<(ServerInfo, Handles, Capabilities)> {
-    let (info, handles, capabilities, accept) = media_server::start(backends)?;
+/// paths" the Settings dialog shows, never its own copy. `cache_dir`
+/// is `host_setup`'s own `app.path().app_cache_dir()` — the first real
+/// use of a cache dir distinct from `data_dir` in this app (Phase 4).
+pub fn start(
+    backends: Backends, cache_dir: std::path::PathBuf,
+) -> std::io::Result<(ServerInfo, Handles, Capabilities)> {
+    let (info, handles, capabilities, accept) = media_server::start(backends, cache_dir)?;
     tauri::async_runtime::spawn(accept);
     Ok((info, handles, capabilities))
 }

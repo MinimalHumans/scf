@@ -2,7 +2,7 @@
 [package]
 name = "media-server"
 version = "0.1.0"
-description = "The media server's loopback HTTP side: passthrough, probing and /meta"
+description = "The media server's loopback HTTP side: passthrough, probing, /meta and the conversion queue"
 license = "Apache-2.0"
 edition = "2021"
 rust-version = "1.90"
@@ -12,7 +12,7 @@ media-core = { path = "../media-core" }
 hyper = { version = "1", default-features = false, features = ["server", "http1"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 http-body-util = "0.1"
-tokio = { version = "1", features = ["net", "rt", "io-util", "time", "macros"] }
+tokio = { version = "1", features = ["net", "rt", "io-util", "time", "macros", "sync"] }
 getrandom = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

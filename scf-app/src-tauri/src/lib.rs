@@ -306,8 +306,17 @@ pub fn run() {
     let socket = sql_socket::start(databases.clone()).expect("a loopback port for SQL");
     let media_backends = media_core::Backends::default();
     media::detect_at_startup(media_backends.clone());
+    // `dirs::cache_dir()` directly, not `app.path().app_cache_dir()`:
+    // no `AppHandle` exists yet at this point (same reason `pipe.rs`'s
+    // own discovery file uses `dirs::data_dir()` rather than waiting
+    // for one). The first real use of a cache dir distinct from the
+    // app's data dir in this app.
+    let media_cache_dir = dirs::cache_dir()
+        .expect("a cache directory for this OS")
+        .join(pipe::IDENTIFIER);
     let (media_server_info, media_handles, media_capabilities) =
-        media_server::start(media_backends.clone()).expect("a loopback port for media");
+        media_server::start(media_backends.clone(), media_cache_dir)
+            .expect("a loopback port for media");
     let relay = mcp_relay::Relay::new();
     let discovery = mcp_relay::start(relay.clone()).expect("a loopback port for the MCP");
     let builder = tauri::Builder::default()

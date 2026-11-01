@@ -26,6 +26,13 @@
  * Phase 3 adds `acquireMeta`, over the same cached (handle, server
  * info) pair `acquire` uses — an asset already shown in a preview does
  * not pay for a second registration just to also ask `/meta` about it.
+ *
+ * Phase 4 adds `startConversion`/`jobStatus`/`cancelJob`: asking
+ * `/media` directly (the same request `acquire`'s URL would trigger if
+ * used as an `<img>`/`<video>` `src`) is what actually decides whether
+ * a conversion is needed, so `startConversion` is the one true way to
+ * find out — there is no separate "does this need converting" check to
+ * get out of sync with the real answer.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -140,6 +147,57 @@ export async function acquireMeta(
   } catch {
     return null;
   }
+}
+
+export interface JobStatus {
+  id: string;
+  state: "queued" | "running" | "done" | "failed" | "cancelled";
+  error: string | null;
+  /** 0-1, or `null` before ffmpeg's first progress line arrives. */
+  progress: number | null;
+}
+
+/**
+ * Asks `/media` for this file directly — exactly the request an
+ * `<img>`/`<video>` `src` of `acquire`'s URL would make. A `200`
+ * (already cached, or genuinely native) or anything that isn't `202`
+ * means there is nothing to queue: `null`. A `202` means a conversion
+ * is now queued or running (an identical in-flight request elsewhere
+ * attaches to the same job — media-server's own dedup, not this
+ * module's), and its job id is returned to poll.
+ */
+export async function startConversion(
+  root: string | null, path: string,
+): Promise<string | null> {
+  const r = await acquireEntry(root, path);
+  if (r === null) return null;
+  try {
+    const res = await fetch(`${r.info.url}/media?h=${r.handle}&t=${r.info.token}`);
+    if (res.status !== 202) return null;
+    const body = await res.json() as { jobId: string };
+    return body.jobId;
+  } catch {
+    return null;
+  }
+}
+
+export async function jobStatus(jobId: string): Promise<JobStatus | null> {
+  const info = await mediaServerInfo();
+  try {
+    const res = await fetch(`${info.url}/jobs/${jobId}?t=${info.token}`);
+    if (!res.ok) return null;
+    return await res.json() as JobStatus;
+  } catch {
+    return null;
+  }
+}
+
+/** Best-effort — the job may already have finished by the time this
+ *  arrives, which is a normal race, not a failure worth surfacing. */
+export async function cancelJob(jobId: string): Promise<void> {
+  const info = await mediaServerInfo();
+  await fetch(`${info.url}/jobs/${jobId}/cancel?t=${info.token}`, { method: "POST" })
+    .catch(() => undefined);
 }
 
 /**

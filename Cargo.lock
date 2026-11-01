@@ -2110,6 +2110,8 @@ dependencies = [
 name = "media-core"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
+ "rusqlite",
  "serde",
  "serde_json",
 ]

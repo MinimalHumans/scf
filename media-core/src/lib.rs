@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-//! media-core — backend discovery/validation (Phase 1), and probing +
-//! verdicts (Phase 3) for the media server (docs/media-server-spec.md
-//! §2, §3, §5).
+//! media-core — backend discovery/validation (Phase 1), probing and
+//! verdicts (Phase 3), and the conversion cache plus ffmpeg remux/
+//! transcode (Phase 4) for the media server (docs/media-server-spec.md
+//! §2, §3, §5, §7).
 //!
 //! No Tauri or webview dependency, deliberately: this is the seam a
 //! standalone, differently-hosted media server (the spec's own future —
@@ -12,7 +13,9 @@
 //! argument, never reaches for it itself.
 
 mod backends;
+mod cache;
 mod capabilities;
+mod convert;
 mod discover;
 mod probe;
 mod validate;
@@ -23,7 +26,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub use backends::Backends;
+pub use cache::{
+    cache_key, delete_orphaned_parts, source_signature, Cache, DerivedParams, EntryInfo,
+    JobInfo, JobState, SourceSignature, PROFILE_VERSION,
+};
 pub use capabilities::Capabilities;
+pub use convert::{spawn_remux, spawn_transcode, wait_with_progress, Spawned};
 pub use probe::{probe, ProbeCache, ProbeResult};
 pub use verdict::{classify, Verdict};
 

@@ -31,9 +31,23 @@ import {
 import { formatOf, parseIdentifier } from "@scf-core/assets.ts";
 import { PROBEABLE } from "@scf-core/preview.ts";
 import { readAssetBytes } from "../files/assetLocator.ts";
-import { acquireMeta, type AssetMeta } from "../files/objectUrlCache.ts";
+import {
+  acquire, acquireMeta, cancelJob, jobStatus, startConversion,
+  type AssetMeta, type JobStatus,
+} from "../files/objectUrlCache.ts";
 import { reportMediaCapabilities } from "../state/mediaCapabilities.ts";
 import { useStore } from "../state/store.ts";
+
+/** How often to poll a queued/running job — frequent enough to feel
+ *  live, far below anything worth debouncing on the server side. */
+const POLL_MS = 750;
+
+type ConvertState =
+  | { kind: "idle" }
+  | { kind: "starting" }
+  | { kind: "polling"; jobId: string; status: JobStatus }
+  | { kind: "done"; url: string }
+  | { kind: "error"; message: string };
 
 function humanBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -51,14 +65,15 @@ function humanDuration(totalSeconds: number): string {
   return h > 0 ? `${String(h)}:${pad(m)}:${pad(sec)}` : `${String(m)}:${pad(sec)}`;
 }
 
-/** One sentence for a verdict that means "the browser can't just play
- *  this" — `null` for `passthrough`, where there's nothing to add. */
+/** `remux`/`transcode` get the "Convert for preview" action below
+ *  instead (Phase 4) — both verdicts only ever come back when ffmpeg
+ *  is configured (`media-core`'s `classify()`), so the button always
+ *  has something that can actually do the work. `unsupported` still
+ *  gets a plain sentence: nothing here can help with it either way. */
 const VERDICT_NOTE: Record<AssetMeta["verdict"], string | null> = {
   passthrough: null,
-  remux: "the codec is fine, but the container needs rewrapping first — " +
-         "not set up yet",
-  transcode: "the browser can't decode this — converting it isn't set " +
-             "up yet",
+  remux: null,
+  transcode: null,
   unsupported: "the browser can't decode this, and nothing here can " +
                "convert it either",
 };
@@ -72,6 +87,7 @@ export function AssetFileFacts({ identifier }: {
   const [modified, setModified] = useState<string | null>(null);
   const [missing, setMissing] = useState(false);
   const [probed, setProbed] = useState<AssetMeta | null>(null);
+  const [convert, setConvert] = useState<ConvertState>({ kind: "idle" });
 
   const root = assetRoot;
   const parsed = identifier === null ? null : parseIdentifier(identifier);
@@ -112,6 +128,60 @@ export function AssetFileFacts({ identifier }: {
 
     return () => { cancelled = true; };
   }, [identifier, root]);
+
+  // A different asset is a clean slate — a conversion in flight for the
+  // last one has no bearing on this one, and polling for it must stop.
+  useEffect(() => { setConvert({ kind: "idle" }); }, [identifier, root]);
+
+  useEffect(() => {
+    if (convert.kind !== "polling") return;
+    let cancelled = false;
+    const jobId = convert.jobId;
+    const timer = setInterval(() => {
+      void jobStatus(jobId).then((status) => {
+        if (cancelled || status === null) return;
+        if (status.state === "done") {
+          if (parsed !== null) {
+            void acquire(root, parsed.path).then((url) => {
+              if (!cancelled) {
+                setConvert(url === null
+                  ? { kind: "error", message: "converted, but could not load it" }
+                  : { kind: "done", url });
+              }
+            });
+          }
+        } else if (status.state === "failed") {
+          setConvert({ kind: "error", message: status.error ?? "conversion failed" });
+        } else if (status.state === "cancelled") {
+          setConvert({ kind: "idle" });
+        } else {
+          setConvert({ kind: "polling", jobId, status });
+        }
+      });
+    }, POLL_MS);
+    return () => { cancelled = true; clearInterval(timer); };
+    // `convert.status` deliberately excluded — re-running this effect
+    // every time the poll updates it would restart the interval
+    // instead of letting it tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convert.kind === "polling" ? convert.jobId : null, root, parsed?.path]);
+
+  const startConvert = (): void => {
+    if (parsed === null) return;
+    setConvert({ kind: "starting" });
+    void startConversion(root, parsed.path).then((jobId) => {
+      setConvert(jobId === null
+        ? { kind: "error", message: "could not start the conversion" }
+        : { kind: "polling", jobId, status: { id: jobId, state: "queued", error: null, progress: null } });
+    });
+  };
+
+  const cancelConvert = (): void => {
+    if (convert.kind === "polling") {
+      void cancelJob(convert.jobId);
+      setConvert({ kind: "idle" });
+    }
+  };
 
   if (identifier === null) return null;
   if (missing) return null;          // resolution already reports this
@@ -195,6 +265,37 @@ export function AssetFileFacts({ identifier }: {
           </dl>
           {VERDICT_NOTE[probed.verdict] !== null && (
             <p className="muted asset-facts-note">{VERDICT_NOTE[probed.verdict]}</p>
+          )}
+          {(probed.verdict === "remux" || probed.verdict === "transcode") && (
+            <div className="asset-facts-convert">
+              {convert.kind === "idle" && (
+                <button className="ghost tiny" onClick={startConvert}>
+                  Convert for preview
+                </button>
+              )}
+              {convert.kind === "starting" && (
+                <p className="muted small">Starting…</p>
+              )}
+              {convert.kind === "polling" && (
+                <div className="settings-row">
+                  <p className="muted small">
+                    {convert.status.state === "running" && convert.status.progress !== null
+                      ? `Converting… ${String(Math.round(convert.status.progress * 100))}%`
+                      : convert.status.state === "running" ? "Converting…" : "Queued…"}
+                  </p>
+                  <button className="ghost tiny" onClick={cancelConvert}>Cancel</button>
+                </div>
+              )}
+              {convert.kind === "done" && (
+                <video src={convert.url} controls className="asset-preview-image" />
+              )}
+              {convert.kind === "error" && (
+                <div className="settings-row">
+                  <p className="settings-error">{convert.message}</p>
+                  <button className="ghost tiny" onClick={startConvert}>Try again</button>
+                </div>
+              )}
+            </div>
           )}
         </>
       )}

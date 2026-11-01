@@ -14,7 +14,10 @@ use http_body_util::Full;
 use hyper::body::{Bytes, Incoming};
 use hyper::{Request, Response, StatusCode};
 
-use crate::Handles;
+use media_core::Verdict;
+
+use crate::queue::DERIVED_PARAMS;
+use crate::{Handles, Queue};
 
 #[derive(Clone)]
 pub struct Context {
@@ -24,6 +27,7 @@ pub struct Context {
     pub backends: media_core::Backends,
     pub capabilities: media_core::Capabilities,
     pub probe_cache: media_core::ProbeCache,
+    pub queue: Queue,
 }
 
 type Res = Response<Full<Bytes>>;
@@ -105,7 +109,24 @@ async fn handle_inner(req: Request<Incoming>, ctx: &Context) -> Res {
     if !authorized(&req, ctx) {
         return text(StatusCode::FORBIDDEN, "missing or wrong token");
     }
+
     let route = req.uri().path().to_string();
+
+    // `/jobs/...` is addressed by job id, not an asset handle — routed
+    // before the handle lookup below, which the other two routes need
+    // and this one doesn't.
+    if let Some(rest) = route.strip_prefix("/jobs/") {
+        return if let Some(job_id) = rest.strip_suffix("/cancel") {
+            if req.method() == hyper::Method::POST {
+                serve_job_cancel(ctx, job_id)
+            } else {
+                text(StatusCode::METHOD_NOT_ALLOWED, "POST only")
+            }
+        } else {
+            serve_job_status(ctx, rest)
+        };
+    }
+
     let Some(handle) = query_param(req.uri().query().unwrap_or(""), "h") else {
         return text(StatusCode::BAD_REQUEST, "missing h");
     };
@@ -119,10 +140,74 @@ async fn handle_inner(req: Request<Incoming>, ctx: &Context) -> Res {
                 .get(hyper::header::RANGE)
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
-            serve_file(Path::new(&path), range_header.as_deref())
+            serve_media(ctx, Path::new(&path), range_header.as_deref())
         }
         "/meta" => serve_meta(ctx, Path::new(&path)),
         _ => text(StatusCode::NOT_FOUND, "no such route"),
+    }
+}
+
+fn serve_job_status(ctx: &Context, job_id: &str) -> Res {
+    let Some(job) = ctx.queue.cache().get_job(job_id) else {
+        return json(StatusCode::NOT_FOUND, &serde_json::json!({ "error": "unknown job" }));
+    };
+    let progress = ctx.queue.progress_of(job_id);
+    json(StatusCode::OK, &serde_json::json!({
+        "id": job.id, "state": job.state, "error": job.error, "progress": progress,
+    }))
+}
+
+fn serve_job_cancel(ctx: &Context, job_id: &str) -> Res {
+    ctx.queue.cancel(job_id);
+    json(StatusCode::OK, &serde_json::json!({ "ok": true }))
+}
+
+/// `/media`: raw passthrough (Phase 2) for anything ffprobe can't or
+/// doesn't need to weigh in on — unchanged from before this phase, and
+/// still the outcome for every image and every format outside Phase
+/// 3's `PROBEABLE` list, which is most of a real project's assets. Only
+/// when probing succeeds does a verdict actually decide anything (the
+/// plan's decision 6).
+fn serve_media(ctx: &Context, path: &Path, range_header: Option<&str>) -> Res {
+    let Some(ffprobe) = ctx.backends.get("ffprobe") else {
+        return serve_file(path, range_header);
+    };
+    let Ok(probe) = ctx.probe_cache.probe(&ffprobe, path) else {
+        return serve_file(path, range_header);
+    };
+    let verdict = media_core::classify(&probe, &ctx.capabilities, &ctx.backends);
+
+    match verdict {
+        Verdict::Passthrough => serve_file(path, range_header),
+        Verdict::Unsupported => json(StatusCode::UNSUPPORTED_MEDIA_TYPE, &serde_json::json!({
+            "error": "the browser can't decode this, and nothing here can convert it either",
+        })),
+        Verdict::Remux | Verdict::Transcode => {
+            let Ok(sig) = media_core::source_signature(path) else {
+                return serve_file(path, range_header); // can't sign it; raw is still a valid answer
+            };
+            let ffmpeg = ctx.backends.get("ffmpeg")
+                .expect("classify() only returns Remux/Transcode when ffmpeg is configured");
+            let version = ctx.backends.version("ffmpeg");
+            let key = media_core::cache_key(
+                sig, "ffmpeg", &version, media_core::PROFILE_VERSION, &DERIVED_PARAMS);
+
+            if let Some(entry) = ctx.queue.cache().get_entry(&key) {
+                ctx.queue.cache().touch_entry(&key);
+                return serve_file(Path::new(&entry.path_on_disk), range_header);
+            }
+            if let Some(error) = ctx.queue.cache().failure(&key) {
+                return json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({ "error": error }));
+            }
+
+            let job_id = ctx.queue.enqueue(crate::queue::EnqueueRequest {
+                key: &key, priority: "requested", input: path, verdict,
+                ffmpeg: &ffmpeg, duration_secs: probe.duration_secs,
+            });
+            json(StatusCode::ACCEPTED, &serde_json::json!({
+                "jobId": job_id, "state": "queued",
+            }))
+        }
     }
 }
 
@@ -393,6 +478,15 @@ mod tests {
     }
 
     fn test_ctx(backends: media_core::Backends) -> Context {
+        // A fresh, unique cache dir per context — never cleaned up, but
+        // tiny (an empty SQLite file) and under the OS temp dir, same
+        // tradeoff `serving_a_missing_file_is_404` already makes by not
+        // cleaning up its path.
+        static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir()
+            .join(format!("media-server-test-ctx-{}-{n}", std::process::id()));
+        let cache = media_core::Cache::open(dir).unwrap();
         Context {
             port: 0,
             token: "tok".to_string(),
@@ -400,6 +494,7 @@ mod tests {
             backends,
             capabilities: media_core::Capabilities::default(),
             probe_cache: media_core::ProbeCache::default(),
+            queue: crate::Queue::new(cache),
         }
     }
 
@@ -465,5 +560,85 @@ mod tests {
         assert!(body.contains("\"verdict\""), "body was: {body}");
 
         let _ = std::fs::remove_file(&out);
+    }
+
+    /// The full `/media` loop against a real file that genuinely needs
+    /// a remux: h264 in a Matroska container, decodable but not a
+    /// container `verdict::NATIVE_CONTAINERS` recognises. First request
+    /// -> `202` + a job id; poll until `done`; second request -> `200`
+    /// serving the converted file, which reprobes as a native
+    /// container. Ignored by default — run with `cargo test -p
+    /// media-server -- --ignored`.
+    #[tokio::test]
+    #[ignore = "depends on this machine's installed backends"]
+    async fn media_queues_a_remux_and_then_serves_the_cached_result() {
+        let statuses = media_core::detect_all(&std::collections::HashMap::new());
+        let ffmpeg = statuses.iter().find(|s| s.id == "ffmpeg" && s.ok)
+            .and_then(|s| s.path.clone());
+        let ffprobe = statuses.iter().find(|s| s.id == "ffprobe" && s.ok)
+            .and_then(|s| s.path.clone());
+        let (Some(ffmpeg), Some(ffprobe)) = (ffmpeg, ffprobe) else {
+            eprintln!("skipping: no real ffmpeg/ffprobe found on this machine");
+            return;
+        };
+
+        let dir = std::env::temp_dir()
+            .join(format!("media-server-test-remux-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.mkv");
+        let status = std::process::Command::new(&ffmpeg)
+            .args(["-y", "-f", "lavfi", "-i", "testsrc=size=64x64:rate=5:duration=1",
+                   "-pix_fmt", "yuv420p", "-c:v", "libx264"])
+            .arg(&input)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let backends = media_core::Backends::default();
+        backends.set("ffmpeg", Some(std::path::PathBuf::from(&ffmpeg)));
+        backends.set("ffprobe", Some(std::path::PathBuf::from(&ffprobe)));
+        let ctx = test_ctx(backends);
+
+        // Confirm the fixture actually needs a remux, not a passthrough
+        // — otherwise this test would "pass" without exercising the
+        // queue at all.
+        let probe = ctx.probe_cache.probe(Path::new(&ffprobe), &input).unwrap();
+        let verdict = media_core::classify(&probe, &ctx.capabilities, &ctx.backends);
+        assert_eq!(verdict, media_core::Verdict::Remux, "fixture's verdict was {verdict:?}");
+
+        let first = serve_media(&ctx, &input, None);
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        let body: serde_json::Value =
+            serde_json::from_slice(&body_bytes(first).await).unwrap();
+        let job_id = body["jobId"].as_str().unwrap().to_string();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let job = ctx.queue.cache().get_job(&job_id).unwrap();
+            match job.state {
+                media_core::JobState::Done => break,
+                media_core::JobState::Failed | media_core::JobState::Cancelled => {
+                    panic!("job ended as {:?}: {:?}", job.state, job.error);
+                }
+                _ => {
+                    assert!(std::time::Instant::now() < deadline, "job did not finish in time");
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+
+        let second = serve_media(&ctx, &input, None);
+        assert_eq!(second.status(), StatusCode::OK);
+        let converted = body_bytes(second).await;
+        assert!(!converted.is_empty());
+
+        // The cached result is a genuinely different, now-native file —
+        // not the original bytes handed back unchanged.
+        let cached_path = dir.join("cached.mp4");
+        std::fs::write(&cached_path, &converted).unwrap();
+        let reprobed = media_core::probe(Path::new(&ffprobe), &cached_path).unwrap();
+        assert_eq!(reprobed.container.as_deref(), Some("mov"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -23,8 +23,10 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 /// The app's identifier (tauri.conf.json, tauri.dev.json), which names
-/// its data folder.
-const IDENTIFIER: &str = if cfg!(debug_assertions) {
+/// its data folder. `pub(crate)`: `lib.rs` reuses this for the media
+/// cache dir, which (like this module's own discovery file) is needed
+/// before any `AppHandle` exists to ask `app.path()` instead.
+pub(crate) const IDENTIFIER: &str = if cfg!(debug_assertions) {
     "com.minimalhumans.scf-editor.dev"
 } else {
     "com.minimalhumans.scf-editor"
