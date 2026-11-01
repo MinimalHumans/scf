@@ -285,6 +285,21 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     avoid_blank_window();
     let background = std::env::args().any(|a| a == BACKGROUND);
+    // A person starting the app again while one is already running:
+    // hand off to it ourselves, with a confirmed answer, rather than
+    // let `tauri_plugin_single_instance` end this process silently with
+    // no way to tell them why nothing opened — or, worse, start a
+    // second engine beside a first that is merely slow to answer. A
+    // pipe's own `--background` start keeps the plugin's existing,
+    // quieter handling instead (pipe.rs's `connect_or_start` already
+    // found nothing running, or it would not be starting one at all).
+    if !background {
+        match pipe::raise_existing() {
+            Some(true) => return,
+            Some(false) => return pipe::alert_unresponsive(),
+            None => {}
+        }
+    }
     let databases = sql::Databases::default();
     let socket = sql_socket::start(databases.clone()).expect("a loopback port for SQL");
     let relay = mcp_relay::Relay::new();
@@ -351,6 +366,19 @@ pub fn run() {
                 if n == 0 && hidden(&on_count) {
                     exit_if_unused(&on_count);
                 }
+            });
+            let raise_handle = handle.clone();
+            relay.set_raiser(move |after| {
+                let app = raise_handle.clone();
+                let app_for_show = app.clone();
+                // Run on the main thread, same as a person clicking the
+                // tray icon: `after` only fires once that has actually
+                // happened, which is what lets a second launch tell a
+                // frozen app from one that merely has not opened yet.
+                let _ = app.run_on_main_thread(move || {
+                    show(&app_for_show);
+                    after();
+                });
             });
             if background {
                 exit_if_unused(&handle);

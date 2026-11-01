@@ -33,6 +33,12 @@ const IDENTIFIER: &str = if cfg!(debug_assertions) {
 /// How long a started app has to be ready.
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long a second launch waits for the running app to confirm it
+/// raised its window, before concluding it is frozen. Longer than the
+/// window's own `RAISE_TIMEOUT` (mcp_relay.rs), so its answer — even a
+/// negative one — has time to arrive.
+const RAISE_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn fail(message: impl std::fmt::Display) -> ExitCode {
     eprintln!("scf-editor: {message}");
     ExitCode::FAILURE
@@ -51,6 +57,43 @@ fn connect() -> Option<(TcpStream, String)> {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2)).ok()?;
     Some((stream, token))
+}
+
+/// Ask an already-running app, if any, to raise its window. `None`
+/// means none was found — safe to start one. `Some(true)` means it
+/// confirmed. `Some(false)` means it is there (the socket accepted the
+/// connection) but never confirmed — frozen, most likely — and this
+/// process must not start a second engine on top of it regardless.
+pub fn raise_existing() -> Option<bool> {
+    let (stream, token) = connect()?;
+    let _ = stream.set_read_timeout(Some(RAISE_TIMEOUT));
+    let mut to_app = stream.try_clone().ok()?;
+    let hello = serde_json::json!({ "token": token, "raise": true });
+    if writeln!(to_app, "{hello}").is_err() {
+        return Some(false);
+    }
+    let mut line = String::new();
+    let ok = BufReader::new(stream).read_line(&mut line).is_ok_and(|n| n > 0)
+        && serde_json::from_str::<serde_json::Value>(&line)
+            .ok()
+            .is_some_and(|v| v["ok"] == true);
+    Some(ok)
+}
+
+/// Tell the person the running copy did not answer, since there is no
+/// window of our own (nor, at this point, even an app) to put it on.
+#[cfg(windows)]
+pub fn alert_unresponsive() {
+    windows::alert(
+        "SCF Editor",
+        "SCF Editor appears to be running already, but it did not \
+         respond. Close it from Task Manager and try again.",
+    );
+}
+
+#[cfg(not(windows))]
+pub fn alert_unresponsive() {
+    eprintln!("scf-editor: already running but not responding; close it and try again");
 }
 
 /// Start the app in the background, detached from this process: its
@@ -91,12 +134,39 @@ mod windows {
         fn AttachConsole(process: u32) -> i32;
     }
 
+    #[link(name = "user32")]
+    extern "system" {
+        fn MessageBoxW(
+            hwnd: *mut c_void, text: *const u16, caption: *const u16, utype: u32,
+        ) -> i32;
+    }
+
     // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE.
     const STDIO: [i32; 3] = [-10, -11, -12];
     const STD_OUTPUT_HANDLE: i32 = -11;
     const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
     const HANDLE_FLAG_INHERIT: u32 = 1;
     const INVALID_HANDLE_VALUE: isize = -1;
+    const MB_OK: u32 = 0x0000_0000;
+    const MB_ICONERROR: u32 = 0x0000_0010;
+
+    fn to_wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// A plain modal alert, for when there is no window of our own —
+    /// nor, at this point, even an app — to put one on.
+    pub fn alert(title: &str, message: &str) {
+        let title = to_wide(title);
+        let message = to_wide(message);
+        // SAFETY: both buffers outlive the call, which is synchronous
+        // and does not retain either pointer past it.
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(), message.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR,
+            );
+        }
+    }
 
     /// Windows gives a child every inheritable handle its parent has, and
     /// this pipe's stdio is inheritable. Were the app to keep a copy of

@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// What `mcp.json` says.
 #[derive(Serialize)]
@@ -45,11 +45,17 @@ struct Hello {
     token: String,
     #[serde(default)]
     args: Vec<String>,
+    #[serde(default)]
     cwd: String,
     #[serde(default)]
     read_only: bool,
     #[serde(default = "yes")]
     elicit: bool,
+    /// Not an agent at all: a second launch of the app asking this one
+    /// to raise its window, and prove — by actually doing it — that its
+    /// main thread is still alive. No session is added for this.
+    #[serde(default)]
+    raise: bool,
 }
 
 fn yes() -> bool {
@@ -153,6 +159,10 @@ struct Inner {
 }
 
 type OnCount = Box<dyn Fn(usize) + Send>;
+/// Puts a window-raise on the app's main thread, calling back once it
+/// has actually run there — the only way to tell a frozen main thread
+/// from one that is merely slow.
+type Raiser = Arc<dyn Fn(Box<dyn FnOnce() + Send>) + Send + Sync>;
 
 /// The pipes connected now. Cheap to clone; every clone is the same.
 #[derive(Clone)]
@@ -162,6 +172,9 @@ pub struct Relay {
     on_count: Arc<Mutex<Option<OnCount>>>,
     /// Since when there has been no pipe; none while there is one.
     idle_since: Arc<Mutex<Option<Instant>>>,
+    /// Set once the window exists (lib.rs's `setup`); unset briefly
+    /// before that, when a `raise` can only fail.
+    raiser: Arc<Mutex<Option<Raiser>>>,
 }
 
 impl Relay {
@@ -170,6 +183,7 @@ impl Relay {
             inner: Arc::default(),
             on_count: Arc::default(),
             idle_since: Arc::new(Mutex::new(Some(Instant::now()))),
+            raiser: Arc::default(),
         }
     }
 
@@ -184,6 +198,14 @@ impl Relay {
 
     pub fn on_count(&self, f: impl Fn(usize) + Send + 'static) {
         *self.on_count.lock().unwrap() = Some(Box::new(f));
+    }
+
+    pub fn set_raiser(&self, f: impl Fn(Box<dyn FnOnce() + Send>) + Send + Sync + 'static) {
+        *self.raiser.lock().unwrap() = Some(Arc::new(f));
+    }
+
+    fn raiser(&self) -> Option<Raiser> {
+        self.raiser.lock().unwrap().clone()
     }
 
     fn counted(&self) {
@@ -301,6 +323,15 @@ async fn serve(relay: Relay, stream: TcpStream, token: Arc<String>) {
         return;
     }
 
+    if hello.raise {
+        let ok = raise_window(&relay).await;
+        let reply = serde_json::json!({ "ok": ok }).to_string();
+        let _ = write.write_all(reply.as_bytes()).await;
+        let _ = write.write_all(b"\n").await;
+        let _ = write.shutdown().await;
+        return;
+    }
+
     let (out, mut outgoing) = mpsc::unbounded_channel();
     let session = relay.add(out, hello);
     tauri::async_runtime::spawn(async move {
@@ -319,6 +350,22 @@ async fn serve(relay: Relay, stream: TcpStream, token: Arc<String>) {
         relay.received(session, line);
     }
     relay.closed(session);
+}
+
+/// How long the window has to prove, on its own main thread, that it
+/// raised itself — not just that the request reached it.
+const RAISE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Ask the window to raise itself, and wait for it to actually have
+/// done so. `false` means either no window exists yet or its main
+/// thread never got back to us in time — frozen, most likely.
+async fn raise_window(relay: &Relay) -> bool {
+    let Some(raiser) = relay.raiser() else { return false };
+    let (tx, rx) = oneshot::channel();
+    raiser(Box::new(move || {
+        let _ = tx.send(());
+    }));
+    tokio::time::timeout(RAISE_TIMEOUT, rx).await.is_ok()
 }
 
 /// Listen on a free loopback port. What `mcp.json` should say comes back.
