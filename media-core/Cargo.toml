@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "media-core"
+version = "0.1.0"
+description = "Discovery and validation of the media server's external backends"
+license = "Apache-2.0"
+edition = "2021"
+rust-version = "1.90"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }

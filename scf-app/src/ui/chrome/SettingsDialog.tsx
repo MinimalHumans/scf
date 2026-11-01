@@ -19,6 +19,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { ProjectRow } from "@scf-host/appStore.ts";
 import { windowAppStore } from "../../host/windowAppStore.ts";
 import { windowAuditStore } from "../../host/windowAuditStore.ts";
@@ -26,6 +27,10 @@ import { chooseAssetFolder } from "../../files/assetFolderChooser.ts";
 import { useSettings } from "../../state/settings.ts";
 import { useStore } from "../../state/store.ts";
 import { useTabs } from "../../state/tabs.ts";
+import {
+  BACKEND_IDS, detectBackends, getOverrides, setOverride,
+  type BackendId, type BackendStatus,
+} from "../../state/mediaBackends.ts";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug",
   "Sep", "Oct", "Nov", "Dec"];
@@ -53,11 +58,12 @@ function formatLastOpened(iso: string, now: Date): string {
 const describe = (e: unknown): string =>
   e instanceof Error ? e.message : String(e);
 
-type Section = "general" | "data";
+type Section = "general" | "data" | "backends";
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "general", label: "General" },
   { id: "data", label: "Local data" },
+  { id: "backends", label: "Backends" },
 ];
 
 function GeneralSection(): JSX.Element {
@@ -282,6 +288,146 @@ function DataSection({ onClose }: { onClose: () => void }): JSX.Element {
   );
 }
 
+/** Display name, download link and what it unlocks, per binary — not a
+ *  capability check, just enough for a human reading the summary line.
+ *  Deeper capability records are media-core's job, Phase 5 onward. */
+const BACKEND_INFO: Record<BackendId, {
+  label: string; href: string; unlocks: string;
+}> = {
+  ffmpeg: {
+    label: "ffmpeg", href: "https://ffmpeg.org/download.html",
+    unlocks: "video/audio transcoding, remuxing and stills",
+  },
+  ffprobe: {
+    label: "ffprobe", href: "https://ffmpeg.org/download.html",
+    unlocks: "video/audio probing (ships with ffmpeg)",
+  },
+  magick: {
+    label: "magick (ImageMagick)",
+    href: "https://imagemagick.org/script/download.php",
+    unlocks: "TIFF, PSD and HEIC stills",
+  },
+  oiiotool: {
+    label: "oiiotool (OpenImageIO)",
+    href: "https://github.com/AcademySoftwareFoundation/OpenImageIO",
+    unlocks: "EXR and DPX stills, OCIO colour transforms",
+  },
+};
+
+function BackendsSection(): JSX.Element {
+  const [overrides, setOverrides] =
+    useState<Record<BackendId, string> | null>(null);
+  const [statuses, setStatuses] = useState<Record<BackendId, BackendStatus> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async (
+    current?: Record<BackendId, string>,
+  ): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const o = current ?? overrides ?? await getOverrides();
+      setOverrides(o);
+      const results = await detectBackends(o);
+      const byId = {} as Record<BackendId, BackendStatus>;
+      for (const r of results) byId[r.id] = r;
+      setStatuses(byId);
+    } catch (e) {
+      setError(describe(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => { void refresh(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const commitOverride = (id: BackendId, path: string): void => {
+    void (async () => {
+      await setOverride(id, path);
+      const next = { ...(overrides ?? await getOverrides()), [id]: path.trim() };
+      await refresh(next);
+    })().catch((e: unknown) => setError(describe(e)));
+  };
+
+  const okCount = statuses === null ? 0 :
+    BACKEND_IDS.filter((id) => statuses[id]?.ok === true).length;
+  const unlocked = statuses === null ? [] : BACKEND_IDS
+    .filter((id) => statuses[id]?.ok === true)
+    .map((id) => BACKEND_INFO[id].unlocks);
+
+  return (
+    <section>
+      <h3>Backends</h3>
+      <p className="muted small">
+        External tools the media server uses to preview formats the
+        browser can't decode on its own — EXR, ProRes, PSD and the like.
+        None are bundled; point at your own copy if it isn't on PATH.
+      </p>
+      <div className="settings-row">
+        <button className="ghost tiny" disabled={busy} onClick={() => void refresh()}>
+          {busy ? "Checking…" : "Re-detect"}
+        </button>
+      </div>
+      {error !== null && <p className="settings-error">{error}</p>}
+      {overrides === null && error === null && <p className="muted">Loading…</p>}
+      {overrides !== null && (
+      <ul className="settings-pairing-list">
+        {BACKEND_IDS.map((id) => {
+          const info = BACKEND_INFO[id];
+          const status = statuses?.[id] ?? null;
+          const override = overrides?.[id] ?? "";
+          return (
+            <li key={id} className="settings-pairing-row">
+              <div className="settings-pairing-main">
+                <div className="settings-pairing-title">
+                  <strong>{info.label}</strong>
+                  <span className={status?.ok === false ? "settings-error small" : "muted small"}>
+                    {status === null ? "—"
+                      : status.ok
+                        ? `✓ ${status.version ?? "found"}`
+                        : status.error ?? "not found"}
+                  </span>
+                </div>
+                <span className="muted small mono">
+                  {status?.path ?? "not resolved"}
+                </span>
+                <label className="settings-row">
+                  <span className="muted small">Path override</span>
+                  <input type="text" className="mono" defaultValue={override}
+                         placeholder="auto-detect"
+                         onBlur={(e) => commitOverride(id, e.target.value)} />
+                </label>
+              </div>
+              <div className="settings-pairing-actions">
+                <button className="ghost tiny" disabled={status?.path == null}
+                        onClick={() => {
+                          if (status?.path != null) void revealItemInDir(status.path);
+                        }}>
+                  Reveal folder
+                </button>
+                <a className="ghost tiny" href={info.href}
+                   target="_blank" rel="noopener noreferrer">
+                  Get it
+                </a>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      )}
+      <p className="muted small">
+        {statuses === null ? "Checking…"
+          : okCount === 0
+            ? "No backends found — previews fall back to whatever the " +
+              "browser can decode natively."
+            : `${String(okCount)} of ${String(BACKEND_IDS.length)} found. ` +
+              `Unlocks: ${unlocked.join("; ")}.`}
+      </p>
+    </section>
+  );
+}
+
 export function SettingsDialog({ onClose }: { onClose: () => void }):
     JSX.Element {
   const [section, setSection] = useState<Section>("general");
@@ -313,6 +459,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }):
           <div className="settings-content">
             {section === "general" && <GeneralSection />}
             {section === "data" && <DataSection onClose={onClose} />}
+            {section === "backends" && <BackendsSection />}
           </div>
         </div>
       </div>

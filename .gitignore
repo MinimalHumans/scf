@@ -6,6 +6,9 @@ __pycache__/
 dist/
 .DS_Store
 site/dist/
+# The Cargo workspace builds into one shared target/ at the repo root
+# now (scf-app/src-tauri/.gitignore still covers its own pre-workspace
+# target/, harmlessly, in case anything stale is left there locally).
 /target/
 # Local Claude Code settings and dev-server launch config
 .claude/

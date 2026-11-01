@@ -19,6 +19,7 @@
 
 mod files;
 mod mcp_relay;
+mod media;
 mod pipe;
 mod sql;
 mod sql_socket;
@@ -407,6 +408,7 @@ pub fn run() {
         mcp_relay::mcp_listen,
         mcp_relay::mcp_send,
         mcp_relay::mcp_close,
+        media::media_detect_backends,
         sql::file_fingerprint,
         sql_socket::sql_socket,
         files::fs_windows,

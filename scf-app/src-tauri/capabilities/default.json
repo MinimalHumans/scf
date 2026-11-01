@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The editor window. It runs the host and the MCP itself on the app's own commands, and needs plugin permissions only for the native file/folder dialogs and opening links in the system browser, and window permissions for the title strip, which is the title bar where the frame is not drawn.",
+  "description": "The editor window. It runs the host and the MCP itself on the app's own commands, and needs plugin permissions only for the native file/folder dialogs, opening links in the system browser, revealing a backend binary's folder (Settings > Backends), and window permissions for the title strip, which is the title bar where the frame is not drawn.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -14,6 +14,7 @@
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://*" }, { "url": "http://*" }, { "url": "mailto:*" }]
-    }
+    },
+    "opener:allow-reveal-item-in-dir"
   ]
 }
