@@ -5,6 +5,12 @@
  * most recently opened first. Missing files and missing asset roots
  * are marked, not hidden — the whole point of a history list is
  * seeing what is there before clicking it.
+ *
+ * Read-only: forgetting an entry is a Settings action (SettingsDialog's
+ * Local data section), not this screen's — one place to edit app.db's
+ * project history, not two that can disagree. `recentProjectsRevision`
+ * is how this list learns Settings changed something while both were
+ * mounted at once.
  */
 
 import { useEffect, useState } from "react";
@@ -31,8 +37,8 @@ async function withExistence(row: ProjectRow): Promise<Entry> {
 
 export function RecentProjects(): JSX.Element | null {
   const openRecentProject = useStore((s) => s.openRecentProject);
+  const recentProjectsRevision = useStore((s) => s.recentProjectsRevision);
   const [entries, setEntries] = useState<Entry[] | null>(null);
-  const [epoch, setEpoch] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,23 +48,7 @@ export function RecentProjects(): JSX.Element | null {
       if (!cancelled) setEntries(withChecks);
     })();
     return () => { cancelled = true; };
-  }, [epoch]);
-
-  const forget = (path: string): void => {
-    void (async () => {
-      await (await windowAppStore()).forgetProject(path);
-      setEpoch((e) => e + 1);
-    })();
-  };
-
-  const clearHistory = (): void => {
-    void (async () => {
-      const store = await windowAppStore();
-      await Promise.all(
-        (entries ?? []).map((e) => store.forgetProject(e.scfPath)));
-      setEpoch((e) => e + 1);
-    })();
-  };
+  }, [recentProjectsRevision]);
 
   if (entries === null || entries.length === 0) return null;
 
@@ -87,16 +77,9 @@ export function RecentProjects(): JSX.Element | null {
                 </span>
               )}
             </button>
-            <button className="ghost tiny" title="Forget this entry"
-                    onClick={() => forget(e.scfPath)}>
-              ✕
-            </button>
           </li>
         ))}
       </ul>
-      <button className="ghost tiny" onClick={clearHistory}>
-        Clear history
-      </button>
     </div>
   );
 }

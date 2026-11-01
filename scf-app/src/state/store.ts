@@ -148,6 +148,12 @@ interface AppState {
    *  nothing to the film. */
   environmentRevision: number;
   revision: number;
+  /** Bumped when Settings' Project history changes app.db's pairings
+   *  (forget, change folder) — the start screen's recent-projects list
+   *  reads it to refetch, since Settings is the only place that writes
+   *  there and the two can be mounted at once. */
+  recentProjectsRevision: number;
+  bumpRecentProjectsRevision: () => void;
 
   navMode: NavMode;
   /** Path-prefix filter for the Assets tab. Lives in the store because
@@ -658,6 +664,9 @@ export const useStore = create<AppState>((set, get) => ({
   assetResolution: null,
   suggestions: null,
   environmentRevision: 0,
+  recentProjectsRevision: 0,
+  bumpRecentProjectsRevision: () => set((s) => ({
+    recentProjectsRevision: s.recentProjectsRevision + 1 })),
   revision: 0,
 
   // The script is what a project is FOR: opening anywhere else means a

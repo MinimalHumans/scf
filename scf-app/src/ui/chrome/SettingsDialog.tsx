@@ -6,11 +6,14 @@
  * showing, not a tool tab competing with project and event-log tabs
  * for the same row.
  *
- * Sections, left to right: General (tab-remembering), Developer (the
- * row identity inspector's on/off switch), Projects (the SCF-to-folder
- * pairings `app.db` keeps), Event log (manual retention). Each owns its
- * own fetch and its own error state, so one section's failure cannot
- * blank the others.
+ * Two sections, not four: General (tab-remembering, developer mode —
+ * both one-line toggles with nothing else to say) and Local data
+ * (project pairings and the event log, grouped under one heading
+ * because both are app.db/audit.db cache, not project content — and
+ * because that framing is also the reason Settings, not the start
+ * screen's recent-projects list, is the one place that forgets a
+ * project). Each inner piece still owns its own fetch and error state,
+ * so one failing cannot blank the rest.
  */
 
 import { useEffect, useState } from "react";
@@ -21,21 +24,21 @@ import { windowAppStore } from "../../host/windowAppStore.ts";
 import { windowAuditStore } from "../../host/windowAuditStore.ts";
 import { chooseAssetFolder } from "../../files/assetFolderChooser.ts";
 import { useSettings } from "../../state/settings.ts";
+import { useStore } from "../../state/store.ts";
 
 const describe = (e: unknown): string =>
   e instanceof Error ? e.message : String(e);
 
-type Section = "general" | "developer" | "projects" | "eventLog";
+type Section = "general" | "data";
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "general", label: "General" },
-  { id: "developer", label: "Developer" },
-  { id: "projects", label: "Projects" },
-  { id: "eventLog", label: "Event log" },
+  { id: "data", label: "Local data" },
 ];
 
 function GeneralSection(): JSX.Element {
-  const { rememberTabs, setRememberTabs } = useSettings();
+  const { rememberTabs, setRememberTabs, developerMode, setDeveloperMode } =
+    useSettings();
   return (
     <section>
       <h3>General</h3>
@@ -49,15 +52,7 @@ function GeneralSection(): JSX.Element {
         time the editor starts. Turning it off also forgets the tabs
         that were remembered.
       </p>
-    </section>
-  );
-}
 
-function DeveloperSection(): JSX.Element {
-  const { developerMode, setDeveloperMode } = useSettings();
-  return (
-    <section>
-      <h3>Developer</h3>
       <label className="settings-check">
         <input type="checkbox" checked={developerMode}
                onChange={(e) => void setDeveloperMode(e.target.checked)} />
@@ -79,6 +74,8 @@ interface PairingRow extends ProjectRow {
 }
 
 function ProjectsSection(): JSX.Element {
+  const bumpRecentProjectsRevision = useStore(
+    (s) => s.bumpRecentProjectsRevision);
   const [rows, setRows] = useState<PairingRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [epoch, setEpoch] = useState(0);
@@ -109,6 +106,7 @@ function ProjectsSection(): JSX.Element {
       const store = await windowAppStore();
       await store.setAssetRoot(scfPath, path);
       setEpoch((e) => e + 1);
+      bumpRecentProjectsRevision();
     })().catch((e: unknown) => setError(describe(e)));
   };
 
@@ -123,13 +121,14 @@ function ProjectsSection(): JSX.Element {
         const store = await windowAppStore();
         await store.forgetProject(scfPath);
         setEpoch((e) => e + 1);
+        bumpRecentProjectsRevision();
       })().catch((e: unknown) => setError(describe(e)));
     });
   };
 
   return (
     <section>
-      <h3>SCF ↔ folder pairings</h3>
+      <h4>Project history</h4>
       <p className="muted small">
         Every project this app has opened, and the asset folder it is
         paired with. Kept in app.db regardless of which project is open
@@ -215,7 +214,7 @@ function EventLogSection(): JSX.Element {
 
   return (
     <section>
-      <h3>Event log</h3>
+      <h4>Event log</h4>
       <p className="muted small">
         A manual cleanup for the local event log (audit.db). This deletes
         from the front of the chain; events kept past this point stay
@@ -237,6 +236,22 @@ function EventLogSection(): JSX.Element {
       </label>
       {notice !== null && <p className="muted small">{notice}</p>}
       {error !== null && <p className="settings-error">{error}</p>}
+    </section>
+  );
+}
+
+function DataSection(): JSX.Element {
+  return (
+    <section>
+      <h3>Local data</h3>
+      <p className="muted small">
+        Project pairings and the event log are both cached on this
+        machine — in app.db and audit.db — not stored in any project
+        file. This is the only place that edits either cache; the start
+        screen's recent-projects list just reads it.
+      </p>
+      <ProjectsSection />
+      <EventLogSection />
     </section>
   );
 }
@@ -271,9 +286,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }):
           </nav>
           <div className="settings-content">
             {section === "general" && <GeneralSection />}
-            {section === "developer" && <DeveloperSection />}
-            {section === "projects" && <ProjectsSection />}
-            {section === "eventLog" && <EventLogSection />}
+            {section === "data" && <DataSection />}
           </div>
         </div>
       </div>
