@@ -175,10 +175,22 @@ const LOCK_RETRY_DELAYS_MS = [75, 200, 500];
 /**
  * Open `path`, verifying it. A file that fails its integrity check, or
  * cannot be opened for a reason other than lock contention, is moved
- * aside as `<path>.bak` (overwriting any earlier one) and a fresh
- * database opened in its place — history is never silently dropped
- * without leaving the old file. A path that does not exist yet is not
+ * aside as `<path>.bak` — history is never silently dropped without
+ * leaving the old file. A path that does not exist yet is not
  * corruption: that failure is rethrown as is.
+ *
+ * An existing `<path>.bak` is never overwritten by a later incident: it
+ * moves to a timestamped name first, so a second crash can never erase
+ * the one record of the first. If that older backup still checks out,
+ * it is promoted straight back to `path` — restored automatically,
+ * rather than starting the user over with a blank history, and it is
+ * the live file again afterward, not a separate leftover copy. A crash
+ * is not a reason to lose a recent-projects list when a recent, intact
+ * copy is sitting right there. Only when there is no usable backup at
+ * all does this fall through to a genuinely fresh database — and even
+ * then, both the freshly-corrupt file and any also-bad prior backup
+ * stay on disk, under names nothing will overwrite again. Nothing here
+ * ever deletes a file, only renames it.
  *
  * Lock contention (another process still holding the file) is retried
  * instead: it is transient, not corruption, and must never be treated as
@@ -199,9 +211,26 @@ export async function openVerified(
   }
   if (isLockContention(lastError)) throw lastError;
   if (!(await fs.exists(path))) throw lastError;
+
   const backup = `${path}.bak`;
-  await fs.remove(backup).catch(() => undefined);
+  let priorBackup: string | null = null;
+  if (await fs.exists(backup)) {
+    priorBackup = `${backup}-${Date.now()}`;
+    await fs.rename(backup, priorBackup);
+  }
   await fs.rename(path, backup);
+
+  if (priorBackup !== null) {
+    const recovered = await verify(await open(priorBackup)).catch(() => null);
+    if (recovered !== null) {
+      await recovered.close();
+      // Promote the verified-good prior backup back into place —
+      // `path` is free (just renamed away above), so this is a move,
+      // not an overwrite of anything.
+      await fs.rename(priorBackup, path);
+      return await verify(await open(path));
+    }
+  }
   return await verify(await open(path));
 }
 

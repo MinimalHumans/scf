@@ -5,8 +5,9 @@
  * and the standalone MCP will use it in practice.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync }
-  from "node:fs";
+import {
+  existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -189,6 +190,54 @@ describe("corruption", () => {
     await store.close();
     expect(existsSync(`${path}.bak`)).toBe(false);
   });
+
+  test("a prior good backup is restored automatically, not wiped blank",
+      async () => {
+    const path = join(dir, "app.db");
+    const good = await openNodeAppStore(path);
+    await good.touchProject("/films/a.scf", { uuid: "u1" });
+    await good.close();
+    // A known-good backup already sitting there, as if from an earlier
+    // recovery (or just a copy the user made).
+    writeFileSync(`${path}.bak`, readFileSync(path));
+    // The live file then goes bad.
+    writeFileSync(path, "not a sqlite file at all");
+
+    const store = await openNodeAppStore(path);
+    try {
+      // Recovered with no action needed — the project row survived.
+      expect((await store.getProject("/films/a.scf"))?.uuid).toBe("u1");
+      // The freshly-corrupt file is preserved under the name a person
+      // would know to look for...
+      expect(readFileSync(`${path}.bak`, "utf8"))
+        .toBe("not a sqlite file at all");
+      // ...and the backup that was there before was promoted straight
+      // back into place rather than silently overwritten — it IS the
+      // live file now, so there is no separate timestamped leftover.
+      expect(readdirSync(dir).some((f) => /\.bak-\d+$/.test(f))).toBe(false);
+    } finally {
+      await store.close();
+    }
+  });
+
+  test("a prior backup that is also bad still falls through to a fresh " +
+      "database, and nothing on disk is destroyed", async () => {
+    const path = join(dir, "app.db");
+    writeFileSync(`${path}.bak`, "also not a database");
+    writeFileSync(path, "not a sqlite file at all");
+
+    const store = await openNodeAppStore(path);
+    try {
+      expect(await store.getProject("/films/a.scf")).toBeNull();
+      await store.touchProject("/films/a.scf", { uuid: "u2" });
+      expect((await store.getProject("/films/a.scf"))?.uuid).toBe("u2");
+    } finally {
+      await store.close();
+    }
+    const files = readdirSync(dir);
+    expect(files).toContain("app.db.bak");
+    expect(files.some((f) => /\.bak-\d+$/.test(f))).toBe(true);
+  });
 });
 
 describe("lock contention vs. corruption", () => {
@@ -200,10 +249,14 @@ describe("lock contention vs. corruption", () => {
     };
   }
 
+  /** Only the main file exists — no `.bak` sitting there already, which
+   *  is what every test in this block means by "no backup" (distinct
+   *  from `rename` never being called, which only the lock-contention
+   *  tests actually expect). */
   function fsExpectingNoBackup(): AppStoreFs & { renamed: boolean } {
     const fs = {
       renamed: false,
-      exists: () => Promise.resolve(true),
+      exists: (p: string) => Promise.resolve(p === "/fake/app.db"),
       remove: () => Promise.resolve(),
       rename: () => { fs.renamed = true; return Promise.resolve(); },
     };
