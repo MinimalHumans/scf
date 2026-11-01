@@ -400,6 +400,7 @@ export function AssetBrowser(): JSX.Element {
 
   const [hideHistoric, setHideHistoric] =
     useRememberedFlag("scf:assets-hide-historic");
+  const [brokenOnly, setBrokenOnly] = useState(false);
 
   const byId = useMemo(() => new Map(assets.map((a) => [a.id, a])),
                        [assets]);
@@ -424,8 +425,10 @@ export function AssetBrowser(): JSX.Element {
   const shown = useMemo(
     () => applyFilter(assets, { ...filter, prefix: assetPrefix },
                       liveOrphans)
-      .filter((a) => !hideHistoric || !historicIds.has(a.id)),
-    [assets, filter, assetPrefix, liveOrphans, hideHistoric, historicIds]);
+      .filter((a) => !hideHistoric || !historicIds.has(a.id))
+      .filter((a) => !brokenOnly || brokenIds.has(a.id)),
+    [assets, filter, assetPrefix, liveOrphans, hideHistoric, historicIds,
+     brokenOnly, brokenIds]);
 
   if (loading) return <div className="asset-browser">Loading assets…</div>;
 
@@ -469,6 +472,14 @@ no relationship. These are what rot at scale.">
                   onClick={() => toggle("unaddressedOnly")}>
             no identifier {facets.unaddressed}
           </button>
+          {brokenIds.size > 0 && (
+            <button className={`tiny${brokenOnly ? " primary" : ""}`}
+                    onClick={() => setBrokenOnly((v) => !v)}
+                    title="Files that are missing or can never resolve
+against the project folder — the same assets the red badge is about.">
+              missing {brokenIds.size}
+            </button>
+          )}
           {historicIds.size > 0 && (
             <button className={`tiny${hideHistoric ? " primary" : ""}`}
                     onClick={() => setHideHistoric(!hideHistoric)}
