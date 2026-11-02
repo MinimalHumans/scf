@@ -139,6 +139,12 @@ async fn handle_inner(req: Request<Incoming>, ctx: &Context) -> Res {
             } else {
                 text(StatusCode::METHOD_NOT_ALLOWED, "POST only")
             }
+        } else if let Some(job_id) = rest.strip_suffix("/retry") {
+            if req.method() == hyper::Method::POST {
+                serve_job_retry(ctx, job_id)
+            } else {
+                text(StatusCode::METHOD_NOT_ALLOWED, "POST only")
+            }
         } else {
             serve_job_status(ctx, rest)
         };
@@ -147,9 +153,11 @@ async fn handle_inner(req: Request<Incoming>, ctx: &Context) -> Res {
     let Some(handle) = query_param(req.uri().query().unwrap_or(""), "h") else {
         return text(StatusCode::BAD_REQUEST, "missing h");
     };
-    let Some(path) = ctx.handles.resolve(handle) else {
+    let Some(resolved) = ctx.handles.resolve(handle) else {
         return text(StatusCode::NOT_FOUND, "unknown or stale handle");
     };
+    let path = resolved.path;
+    let project_ids = resolved.project_ids;
     match route.as_str() {
         "/media" => {
             let range_header = req
@@ -160,7 +168,10 @@ async fn handle_inner(req: Request<Incoming>, ctx: &Context) -> Res {
             let query = req.uri().query().unwrap_or("").to_string();
             let layer = query_param(&query, "layer").map(str::to_string);
             let channel = query_param(&query, "channel").map(str::to_string);
-            serve_media(ctx, Path::new(&path), range_header.as_deref(), layer.as_deref(), channel.as_deref())
+            serve_media(
+                ctx, Path::new(&path), range_header.as_deref(),
+                layer.as_deref(), channel.as_deref(), &project_ids,
+            )
         }
         "/meta" => serve_meta(ctx, Path::new(&path)),
         _ => text(StatusCode::NOT_FOUND, "no such route"),
@@ -182,6 +193,20 @@ fn serve_job_cancel(ctx: &Context, job_id: &str) -> Res {
     json(StatusCode::OK, &serde_json::json!({ "ok": true }))
 }
 
+/// The explicit "Retry" action (spec §7 "Manual actions") for a failed
+/// job: drops its cache key's negative-cache row so the next `/media`
+/// request for it attempts again. Addressed by job id, like cancel,
+/// rather than by the raw cache key — the frontend only ever sees job
+/// ids (from a `202`'s body or the future dashboard's failures list),
+/// never a key.
+fn serve_job_retry(ctx: &Context, job_id: &str) -> Res {
+    let Some(job) = ctx.queue.cache().get_job(job_id) else {
+        return json(StatusCode::NOT_FOUND, &serde_json::json!({ "error": "unknown job" }));
+    };
+    ctx.queue.cache().retry_failure(&job.key);
+    json(StatusCode::OK, &serde_json::json!({ "ok": true }))
+}
+
 /// `/media`: raw passthrough (Phase 2) for anything ffprobe can't or
 /// doesn't need to weigh in on — unchanged from before this phase, and
 /// still the outcome for every image and every format outside Phase
@@ -193,11 +218,11 @@ fn serve_job_cancel(ctx: &Context, job_id: &str) -> Res {
 /// incidentally fail for some other reason.
 fn serve_media(
     ctx: &Context, path: &Path, range_header: Option<&str>,
-    layer: Option<&str>, channel: Option<&str>,
+    layer: Option<&str>, channel: Option<&str>, project_ids: &[String],
 ) -> Res {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         if let Some(backend_id) = still_backend_for(&ext.to_lowercase()) {
-            return serve_still_media(ctx, path, range_header, backend_id, layer, channel);
+            return serve_still_media(ctx, path, range_header, backend_id, layer, channel, project_ids);
         }
     }
 
@@ -224,22 +249,35 @@ fn serve_media(
             let key = media_core::cache_key(
                 sig, "ffmpeg", &version, media_core::PROFILE_VERSION, &DERIVED_PARAMS);
 
-            if let Some(entry) = ctx.queue.cache().get_entry(&key) {
-                ctx.queue.cache().touch_entry(&key);
-                return serve_file(Path::new(&entry.path_on_disk), range_header);
-            }
-            if let Some(error) = ctx.queue.cache().failure(&key) {
-                return json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({ "error": error }));
+            for pid in project_ids {
+                ctx.queue.cache().add_ref(pid, &key);
             }
 
-            let job_id = ctx.queue.enqueue(crate::queue::EnqueueRequest {
-                key: &key, priority: "requested", input: path, verdict,
-                backend_id: "ffmpeg", backend: &ffmpeg,
-                duration_secs: probe.duration_secs, still: None,
-            });
-            json(StatusCode::ACCEPTED, &serde_json::json!({
-                "jobId": job_id, "state": "queued",
-            }))
+            let response = if let Some(entry) = ctx.queue.cache().get_entry(&key) {
+                ctx.queue.cache().touch_entry(&key);
+                serve_file(Path::new(&entry.path_on_disk), range_header)
+            } else if let Some(error) = ctx.queue.cache().failure(&key) {
+                json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({ "error": error }))
+            } else {
+                let job_id = ctx.queue.enqueue(crate::queue::EnqueueRequest {
+                    key: &key, priority: "requested", input: path, verdict,
+                    backend_id: "ffmpeg", backend: &ffmpeg,
+                    duration_secs: probe.duration_secs, still: None,
+                });
+                json(StatusCode::ACCEPTED, &serde_json::json!({
+                    "jobId": job_id, "state": "queued",
+                }))
+            };
+
+            // Enforcement "at write time" (spec §6/§7): after the
+            // request that may have just grown this project's usage,
+            // not before — `touch_entry` above needs to have run first
+            // so a hit on the entry itself never reads as its own LRU
+            // candidate.
+            for pid in project_ids {
+                ctx.queue.cache().enforce_quota(pid, &media_core::VIDEO_KINDS, media_core::DEFAULT_VIDEO_CAP_BYTES);
+            }
+            response
         }
         Verdict::Render => unreachable!("still formats never reach classify() — see still_backend_for"),
     }
@@ -257,7 +295,7 @@ fn serve_media(
 /// error.
 fn serve_still_media(
     ctx: &Context, path: &Path, range_header: Option<&str>, backend_id: &str,
-    layer: Option<&str>, channel: Option<&str>,
+    layer: Option<&str>, channel: Option<&str>, project_ids: &[String],
 ) -> Res {
     let Some(backend_path) = ctx.backends.get(backend_id) else {
         return serve_file(path, range_header); // spec §5: no backend -> raw passthrough
@@ -299,20 +337,28 @@ fn serve_still_media(
     let key = media_core::cache_key(sig, backend_id, &version, media_core::PROFILE_VERSION, &params);
     let selection = media_core::resolve_still_selection(&probe, layer, channel);
 
-    if let Some(entry) = ctx.queue.cache().get_entry(&key) {
-        ctx.queue.cache().touch_entry(&key);
-        return serve_file(Path::new(&entry.path_on_disk), range_header);
-    }
-    if let Some(error) = ctx.queue.cache().failure(&key) {
-        return json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({ "error": error }));
+    for pid in project_ids {
+        ctx.queue.cache().add_ref(pid, &key);
     }
 
-    let job_id = ctx.queue.enqueue(crate::queue::EnqueueRequest {
-        key: &key, priority: "requested", input: path, verdict,
-        backend_id, backend: &backend_path, duration_secs: None,
-        still: Some(StillRenderRequest { selection, width: probe.width, height: probe.height }),
-    });
-    json(StatusCode::ACCEPTED, &serde_json::json!({ "jobId": job_id, "state": "queued" }))
+    let response = if let Some(entry) = ctx.queue.cache().get_entry(&key) {
+        ctx.queue.cache().touch_entry(&key);
+        serve_file(Path::new(&entry.path_on_disk), range_header)
+    } else if let Some(error) = ctx.queue.cache().failure(&key) {
+        json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({ "error": error }))
+    } else {
+        let job_id = ctx.queue.enqueue(crate::queue::EnqueueRequest {
+            key: &key, priority: "requested", input: path, verdict,
+            backend_id, backend: &backend_path, duration_secs: None,
+            still: Some(StillRenderRequest { selection, width: probe.width, height: probe.height }),
+        });
+        json(StatusCode::ACCEPTED, &serde_json::json!({ "jobId": job_id, "state": "queued" }))
+    };
+
+    for pid in project_ids {
+        ctx.queue.cache().enforce_quota(pid, &media_core::STILL_KINDS, media_core::DEFAULT_STILL_CAP_BYTES);
+    }
+    response
 }
 
 /// `/meta` for a still format: the same `probe`/`verdict` shape video
@@ -680,7 +726,7 @@ mod tests {
         let ctx = test_ctx(media_core::Backends::default());
         let data = b"not really an exr, content doesn't matter here";
         let file = TempFile::with_bytes("fake.exr", data);
-        let res = serve_media(&ctx, &file.path, None, None, None);
+        let res = serve_media(&ctx, &file.path, None, None, None, &[]);
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(body_bytes(res).await, data);
     }
@@ -695,8 +741,32 @@ mod tests {
         backends.set("magick", Some(std::path::PathBuf::from("Z:/definitely/not/magick.exe")));
         let ctx = test_ctx(backends);
         let file = TempFile::with_bytes("broken.tiff", b"whatever");
-        let res = serve_media(&ctx, &file.path, None, None, None);
+        let res = serve_media(&ctx, &file.path, None, None, None, &[]);
         assert_eq!(res.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    #[tokio::test]
+    async fn retrying_an_unknown_job_is_404() {
+        let ctx = test_ctx(media_core::Backends::default());
+        let res = serve_job_retry(&ctx, "not-a-real-job-id");
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// `serve_job_retry` is addressed by job id (spec §7 "Manual
+    /// actions": Retry), not by the cache key the negative cache is
+    /// actually keyed on — this confirms it resolves one to the other
+    /// correctly, the one piece of Phase 6's retry wiring `cache.rs`'s
+    /// own tests (keyed directly) can't cover.
+    #[tokio::test]
+    async fn retrying_a_failed_job_clears_its_negative_cache_entry() {
+        let ctx = test_ctx(media_core::Backends::default());
+        let job_id = ctx.queue.cache().create_job("some-key", "requested");
+        ctx.queue.cache().record_failure("some-key", "ffmpeg exited with code 1");
+        assert!(ctx.queue.cache().failure("some-key").is_some());
+
+        let res = serve_job_retry(&ctx, &job_id);
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(ctx.queue.cache().failure("some-key").is_none());
     }
 
     /// The full still `/media` loop against a real magick-flattenable
@@ -730,7 +800,8 @@ mod tests {
         backends.set("magick", Some(std::path::PathBuf::from(&magick)));
         let ctx = test_ctx(backends);
 
-        let first = serve_media(&ctx, &input, None, None, None);
+        let project_ids = vec!["proj-still-test".to_string()];
+        let first = serve_media(&ctx, &input, None, None, None, &project_ids);
         assert_eq!(first.status(), StatusCode::ACCEPTED);
         let body: serde_json::Value =
             serde_json::from_slice(&body_bytes(first).await).unwrap();
@@ -751,10 +822,17 @@ mod tests {
             }
         }
 
-        let second = serve_media(&ctx, &input, None, None, None);
+        let second = serve_media(&ctx, &input, None, None, None, &project_ids);
         assert_eq!(second.status(), StatusCode::OK);
         let converted = body_bytes(second).await;
         assert!(!converted.is_empty());
+
+        // Phase 6: the project that asked for this render now has a
+        // tracked ref to it, and flushing that project reclaims the
+        // file on disk.
+        assert!(ctx.queue.cache().project_usage_bytes("proj-still-test", &media_core::STILL_KINDS) > 0);
+        ctx.queue.cache().flush_project("proj-still-test");
+        assert_eq!(ctx.queue.cache().project_usage_bytes("proj-still-test", &media_core::STILL_KINDS), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -843,7 +921,8 @@ mod tests {
         let verdict = media_core::classify(&probe, &ctx.capabilities, &ctx.backends);
         assert_eq!(verdict, media_core::Verdict::Remux, "fixture's verdict was {verdict:?}");
 
-        let first = serve_media(&ctx, &input, None, None, None);
+        let project_ids = vec!["proj-remux-test".to_string()];
+        let first = serve_media(&ctx, &input, None, None, None, &project_ids);
         assert_eq!(first.status(), StatusCode::ACCEPTED);
         let body: serde_json::Value =
             serde_json::from_slice(&body_bytes(first).await).unwrap();
@@ -864,7 +943,7 @@ mod tests {
             }
         }
 
-        let second = serve_media(&ctx, &input, None, None, None);
+        let second = serve_media(&ctx, &input, None, None, None, &project_ids);
         assert_eq!(second.status(), StatusCode::OK);
         let converted = body_bytes(second).await;
         assert!(!converted.is_empty());
@@ -875,6 +954,12 @@ mod tests {
         std::fs::write(&cached_path, &converted).unwrap();
         let reprobed = media_core::probe(Path::new(&ffprobe), &cached_path).unwrap();
         assert_eq!(reprobed.container.as_deref(), Some("mov"));
+
+        // Phase 6: the requesting project now has a tracked ref to the
+        // converted entry, and flushing it reclaims the cache file.
+        assert!(ctx.queue.cache().project_usage_bytes("proj-remux-test", &media_core::VIDEO_KINDS) > 0);
+        ctx.queue.cache().flush_project("proj-remux-test");
+        assert_eq!(ctx.queue.cache().project_usage_bytes("proj-remux-test", &media_core::VIDEO_KINDS), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

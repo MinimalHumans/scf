@@ -1,10 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The persistent conversion cache (docs/media-server-spec.md §7),
-//! scoped to this phase's slice of it: a single global content-
-//! addressed store (`entries`) plus the job queue's own bookkeeping
-//! (`jobs`, `failures`). No per-project `refs` table yet — nothing in
-//! this phase acts on per-project accounting (eviction, flush), so it
-//! would be dead weight; see the plan this was built from.
+//! The persistent conversion cache (docs/media-server-spec.md §7): a
+//! single global content-addressed store (`entries`), the job queue's
+//! own bookkeeping (`jobs`, `failures`), and (Phase 6) a per-project
+//! `refs` table — `project_id` is, for now, whatever string the caller
+//! already uses as a project's identity (`media-server`'s `Handles`
+//! passes through the asset root the frontend resolved against, per
+//! `resolvedAbsolutePath`'s caller) rather than the `app.db` project
+//! row's `uuid` the spec's §7 sketch names: that identity is scf-core's
+//! to assign and isn't reachable from this crate or `media-server`,
+//! neither of which touches `app.db`. Swapping in the real uuid later
+//! is a caller-side change only — every method here just hashes
+//! whatever string it's given.
+//!
+//! Eviction (`enforce_quota`) and the manual flush/retry actions (spec
+//! §7 "Eviction"/"Negative cache"/"Manual actions") are this phase's
+//! other addition. Per-project caps are per *kind group* ([`VIDEO_KINDS`]
+//! / [`STILL_KINDS`]) rather than one cap across both — spec §7
+//! "Separate quotas: thumbnails, stills, video proxies. One large proxy
+//! cannot evict thumbnails" — and are fixed defaults, not yet
+//! user-configurable (the plan's decision 7, same as the queue's
+//! concurrency caps and the output profiles in `convert.rs`).
 //!
 //! `rusqlite` directly, mirroring `scf-app/src-tauri/src/sql.rs`'s
 //! `open()`: WAL mode plus a busy timeout, since the HTTP listener and
@@ -186,7 +201,13 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            error TEXT NOT NULL,
            attempts INTEGER NOT NULL DEFAULT 1,
            last_attempt INTEGER NOT NULL
-         );",
+         );
+         CREATE TABLE IF NOT EXISTS refs (
+           project_id TEXT NOT NULL,
+           key TEXT NOT NULL,
+           PRIMARY KEY (project_id, key)
+         );
+         CREATE INDEX IF NOT EXISTS refs_key ON refs (key);",
     )
 }
 
@@ -286,9 +307,8 @@ impl Cache {
         .unwrap_or(None)
     }
 
-    /// Cache hits update `last_access`/`hit_count` (spec §7 "Eviction"
-    /// — LRU bookkeeping starts now even though nothing reads it for
-    /// eviction decisions until Phase 6).
+    /// Cache hits update `last_access`/`hit_count` (spec §7 "Eviction" —
+    /// what [`Cache::enforce_quota`] orders its LRU candidates by).
     pub fn touch_entry(&self, key: &str) {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
@@ -409,7 +429,192 @@ impl Cache {
             rusqlite::params![key, error, now()],
         );
     }
+
+    /// Explicit "Retry" (spec §7 "Manual actions") — drops the negative-
+    /// cache row so the next request for `key` attempts again even
+    /// though the source hasn't changed (the automatic unblock
+    /// `failure()`'s doc comment describes). A no-op for a key with no
+    /// recorded failure.
+    pub fn retry_failure(&self, key: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute("DELETE FROM failures WHERE key = ?1", [key]);
+    }
+
+    /// Records that `project_id` has used `key` — spec §7's `refs`
+    /// table. Called on every `/media` request that reaches a cache
+    /// key, hit or miss, so a project's usage reflects everything it's
+    /// asked for, not just what it happened to be first to produce.
+    /// Idempotent: a repeat request for the same (project, key) pair is
+    /// a no-op, not a second row.
+    pub fn add_ref(&self, project_id: &str, key: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT INTO refs (project_id, key) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+            rusqlite::params![project_id, key],
+        );
+    }
+
+    /// Bytes of `kinds`-matching entries `project_id` currently
+    /// references. Spec §7: "Entries referenced by multiple projects
+    /// count once toward the store total, and toward each project's
+    /// usage proportionally or fully (pick fully...)" — this is that
+    /// "fully": a shared entry counts its whole size toward every
+    /// project that references it, not a fraction.
+    pub fn project_usage_bytes(&self, project_id: &str, kinds: &[&str]) -> u64 {
+        let conn = self.conn.lock().unwrap();
+        project_usage_bytes_locked(&conn, project_id, kinds)
+    }
+
+    /// LRU-evicts `kinds`-matching entries `project_id` references
+    /// until its usage for that kind group is at or under `cap_bytes`
+    /// (spec §7 "Eviction", enforced "at write time" — the caller's job
+    /// is to call this right after a request that may have just grown
+    /// the project's usage, hit or miss alike).
+    ///
+    /// An entry with an active ([`JobState::Queued`]/[`JobState::
+    /// Running`]) job for its key is never a candidate (spec: "Pinned
+    /// entries (currently playing, queued) are never evicted" — the
+    /// only form of pinning this phase has a producer for; nothing yet
+    /// tracks "currently playing" as distinct session state). If every
+    /// remaining entry is pinned this way, usage simply stays over cap
+    /// until one of them finishes — there is nothing else to evict.
+    ///
+    /// Dropping `project_id`'s own ref to a candidate, rather than the
+    /// entry outright, matches `flush_project`'s own semantics: the
+    /// entry itself is only ever deleted once no project still
+    /// references it (see `delete_entry_if_unreferenced_locked`), so a
+    /// file shared with another project survives this project's
+    /// eviction.
+    pub fn enforce_quota(&self, project_id: &str, kinds: &[&str], cap_bytes: u64) {
+        let conn = self.conn.lock().unwrap();
+        loop {
+            if project_usage_bytes_locked(&conn, project_id, kinds) <= cap_bytes {
+                break;
+            }
+            let mut params: Vec<&str> = vec![project_id];
+            params.extend(kinds.iter().copied());
+            let sql = format!(
+                "SELECT e.key FROM entries e JOIN refs r ON r.key = e.key
+                 WHERE r.project_id = ?1 AND e.kind IN ({})
+                   AND e.key NOT IN (SELECT key FROM jobs WHERE state IN ('queued', 'running'))
+                 ORDER BY e.last_access ASC LIMIT 1",
+                kinds_placeholders(kinds, 2),
+            );
+            let candidate: Option<String> = conn
+                .query_row(&sql, rusqlite::params_from_iter(params), |row| row.get(0))
+                .optional()
+                .unwrap_or(None);
+            match candidate {
+                Some(key) => remove_ref_locked(&conn, project_id, &key),
+                None => break, // nothing left to evict — the rest is pinned
+            }
+        }
+    }
+
+    /// Drops every ref `project_id` holds, deleting the entries that
+    /// leaves unreferenced (spec §7 "Manual actions": "Flush project
+    /// (drops refs, deletes entries with no remaining refs)").
+    pub fn flush_project(&self, project_id: &str) {
+        let conn = self.conn.lock().unwrap();
+        let keys: Vec<String> = conn
+            .prepare("SELECT key FROM refs WHERE project_id = ?1")
+            .and_then(|mut stmt| {
+                stmt.query_map([project_id], |row| row.get(0))?.collect()
+            })
+            .unwrap_or_default();
+        for key in keys {
+            remove_ref_locked(&conn, project_id, &key);
+        }
+    }
+
+    /// Drops every entry and ref, deletes every cached file, and clears
+    /// the negative cache (spec §7: "Flush all" plus "[Negative cache
+    /// is] cleared by cache flush").
+    pub fn flush_all(&self) {
+        let conn = self.conn.lock().unwrap();
+        let paths: Vec<String> = conn
+            .prepare("SELECT path_on_disk FROM entries")
+            .and_then(|mut stmt| stmt.query_map([], |row| row.get(0))?.collect())
+            .unwrap_or_default();
+        for path in &paths {
+            let _ = std::fs::remove_file(path);
+        }
+        let _ = conn.execute("DELETE FROM entries", []);
+        let _ = conn.execute("DELETE FROM refs", []);
+        let _ = conn.execute("DELETE FROM failures", []);
+    }
 }
+
+/// `project_id`'s own usage-accounting primitive, taking an already-
+/// locked connection so callers that need to read-then-write (
+/// `enforce_quota`'s loop) never lock `Cache`'s mutex twice from the
+/// same thread — `std::sync::Mutex` isn't reentrant.
+fn project_usage_bytes_locked(conn: &Connection, project_id: &str, kinds: &[&str]) -> u64 {
+    let sql = format!(
+        "SELECT COALESCE(SUM(e.bytes), 0) FROM refs r JOIN entries e ON e.key = r.key
+         WHERE r.project_id = ?1 AND e.kind IN ({})",
+        kinds_placeholders(kinds, 2),
+    );
+    let mut params: Vec<&str> = vec![project_id];
+    params.extend(kinds.iter().copied());
+    conn.query_row(&sql, rusqlite::params_from_iter(params), |row| row.get::<_, i64>(0))
+        .unwrap_or(0) as u64
+}
+
+/// `?2, ?3, ...` for as many `kinds` as given, starting after
+/// `first_unused` positional params already spoken for by the caller's
+/// own SQL (`?1` for `project_id`, in every caller above).
+fn kinds_placeholders(kinds: &[&str], first_unused: usize) -> String {
+    (0..kinds.len())
+        .map(|i| format!("?{}", first_unused + i))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Drops `project_id`'s ref to `key`, then deletes the entry (and its
+/// file) if that was the last one. Takes a locked connection for the
+/// same reason `project_usage_bytes_locked` does.
+fn remove_ref_locked(conn: &Connection, project_id: &str, key: &str) {
+    let _ = conn.execute(
+        "DELETE FROM refs WHERE project_id = ?1 AND key = ?2",
+        rusqlite::params![project_id, key],
+    );
+    delete_entry_if_unreferenced_locked(conn, key);
+}
+
+/// If no project still refs `key`, deletes its cache file and `entries`
+/// row. A query error is treated as "still referenced" — the safe
+/// direction when in doubt is to leave the file alone, not delete it.
+fn delete_entry_if_unreferenced_locked(conn: &Connection, key: &str) {
+    let still_referenced: bool = conn
+        .query_row("SELECT EXISTS(SELECT 1 FROM refs WHERE key = ?1)", [key], |row| row.get(0))
+        .unwrap_or(true);
+    if still_referenced {
+        return;
+    }
+    let path: Option<String> = conn
+        .query_row("SELECT path_on_disk FROM entries WHERE key = ?1", [key], |row| row.get(0))
+        .optional()
+        .unwrap_or(None);
+    if let Some(path) = path {
+        let _ = std::fs::remove_file(path);
+    }
+    let _ = conn.execute("DELETE FROM entries WHERE key = ?1", [key]);
+}
+
+/// Spec §7 "Separate quotas: thumbnails, stills, video proxies" — the
+/// two kind groups this codebase actually has entries for today (no
+/// thumbnail profile exists yet; see `convert.rs`/`still_convert.rs`).
+pub const VIDEO_KINDS: [&str; 2] = ["remux", "transcode"];
+pub const STILL_KINDS: [&str; 1] = ["render"];
+
+/// Spec §8 "Per-project max cache MB, per-kind quotas" — fixed for now
+/// (the plan's decision 7), one default per kind group rather than one
+/// overall project cap: the two group caps already bound a project's
+/// total footprint, and a third cross-kind cap would only add a layer
+/// with no settings surface yet to make it mean anything.
+pub const DEFAULT_VIDEO_CAP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const DEFAULT_STILL_CAP_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Orphaned `.part` files from a previous run (spec §6) — nothing
 /// references them (every live job's row was just reset above, and a
@@ -590,5 +795,161 @@ mod tests {
 
         assert!(!tmp.join("abc.part").exists());
         assert!(tmp.join("keep.txt").exists());
+    }
+
+    /// A real file under `dir`'s `entries/` folder, registered as `key`
+    /// — eviction/flush tests need a real path to assert the file is
+    /// actually gone, not just the row.
+    fn put_real_entry(cache: &Cache, dir: &Path, key: &str, kind: &str, bytes: u64) -> PathBuf {
+        let path = dir.join("entries").join(format!("{key}.bin"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, vec![0u8; bytes as usize]).unwrap();
+        cache.put_entry(key, &path.display().to_string(), bytes, kind);
+        path
+    }
+
+    /// Bypasses `now()`'s 1-second resolution so LRU-ordering tests
+    /// don't race against how fast the test itself runs.
+    fn set_last_access(cache: &Cache, key: &str, when: i64) {
+        let conn = cache.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE entries SET last_access = ?1 WHERE key = ?2",
+            rusqlite::params![when, key],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn project_usage_sums_only_the_matching_kind_group_for_referenced_entries() {
+        let (cache, dir) = temp_cache("refs-usage");
+        put_real_entry(&cache, &dir.path, "v1", "transcode", 100);
+        put_real_entry(&cache, &dir.path, "s1", "render", 50);
+        cache.add_ref("proj-a", "v1");
+        cache.add_ref("proj-a", "s1");
+
+        assert_eq!(cache.project_usage_bytes("proj-a", &VIDEO_KINDS), 100);
+        assert_eq!(cache.project_usage_bytes("proj-a", &STILL_KINDS), 50);
+        assert_eq!(cache.project_usage_bytes("proj-b", &VIDEO_KINDS), 0);
+    }
+
+    #[test]
+    fn adding_the_same_ref_twice_does_not_double_count_usage() {
+        let (cache, dir) = temp_cache("refs-dedup");
+        put_real_entry(&cache, &dir.path, "v1", "remux", 10);
+        cache.add_ref("proj-a", "v1");
+        cache.add_ref("proj-a", "v1");
+        assert_eq!(cache.project_usage_bytes("proj-a", &VIDEO_KINDS), 10);
+    }
+
+    #[test]
+    fn enforce_quota_evicts_the_least_recently_used_entry_first() {
+        let (cache, dir) = temp_cache("quota-lru");
+        let p1 = put_real_entry(&cache, &dir.path, "v1", "remux", 100);
+        let p2 = put_real_entry(&cache, &dir.path, "v2", "remux", 100);
+        set_last_access(&cache, "v1", 1000);
+        set_last_access(&cache, "v2", 2000);
+        cache.add_ref("proj", "v1");
+        cache.add_ref("proj", "v2");
+
+        cache.enforce_quota("proj", &VIDEO_KINDS, 100);
+
+        assert!(cache.get_entry("v1").is_none(), "the older entry should have been evicted");
+        assert!(!p1.exists());
+        assert!(cache.get_entry("v2").is_some());
+        assert!(p2.exists());
+    }
+
+    #[test]
+    fn enforce_quota_never_evicts_an_entry_with_an_active_job() {
+        let (cache, dir) = temp_cache("quota-pinned");
+        let p1 = put_real_entry(&cache, &dir.path, "v1", "remux", 100);
+        cache.add_ref("proj", "v1");
+        let job = cache.create_job("v1", "requested");
+        cache.set_job_running(&job);
+
+        cache.enforce_quota("proj", &VIDEO_KINDS, 0); // an impossibly tight cap
+
+        assert!(cache.get_entry("v1").is_some(), "an entry with a running job must survive eviction");
+        assert!(p1.exists());
+    }
+
+    #[test]
+    fn enforce_quota_only_evicts_the_matching_kind_group() {
+        let (cache, dir) = temp_cache("quota-kinds");
+        let video = put_real_entry(&cache, &dir.path, "v1", "remux", 100);
+        put_real_entry(&cache, &dir.path, "s1", "render", 100);
+        cache.add_ref("proj", "v1");
+        cache.add_ref("proj", "s1");
+
+        cache.enforce_quota("proj", &STILL_KINDS, 0);
+
+        assert!(cache.get_entry("v1").is_some(), "a video entry must survive a still-only eviction");
+        assert!(video.exists());
+        assert!(cache.get_entry("s1").is_none(), "the over-quota still entry is evicted");
+    }
+
+    #[test]
+    fn evicting_a_shared_entry_for_one_project_drops_only_that_projects_ref() {
+        let (cache, dir) = temp_cache("quota-shared");
+        let path = put_real_entry(&cache, &dir.path, "v1", "remux", 100);
+        cache.add_ref("proj-a", "v1");
+        cache.add_ref("proj-b", "v1");
+
+        cache.enforce_quota("proj-a", &VIDEO_KINDS, 0);
+
+        assert_eq!(cache.project_usage_bytes("proj-a", &VIDEO_KINDS), 0, "proj-a's own ref is gone");
+        assert_eq!(cache.project_usage_bytes("proj-b", &VIDEO_KINDS), 100, "proj-b's ref, and the file, survive");
+        assert!(path.exists());
+        assert!(cache.get_entry("v1").is_some());
+    }
+
+    #[test]
+    fn flush_project_drops_only_that_projects_refs_and_entries() {
+        let (cache, dir) = temp_cache("flush-project");
+        let only_a = put_real_entry(&cache, &dir.path, "only-a", "remux", 10);
+        let shared = put_real_entry(&cache, &dir.path, "shared", "remux", 10);
+        cache.add_ref("proj-a", "only-a");
+        cache.add_ref("proj-a", "shared");
+        cache.add_ref("proj-b", "shared");
+
+        cache.flush_project("proj-a");
+
+        assert!(cache.get_entry("only-a").is_none());
+        assert!(!only_a.exists());
+        assert!(cache.get_entry("shared").is_some(), "still referenced by proj-b");
+        assert!(shared.exists());
+    }
+
+    #[test]
+    fn flush_all_clears_entries_refs_and_failures_and_deletes_the_files() {
+        let (cache, dir) = temp_cache("flush-all");
+        let path = put_real_entry(&cache, &dir.path, "v1", "remux", 10);
+        cache.add_ref("proj-a", "v1");
+        cache.record_failure("v2", "not a media file");
+
+        cache.flush_all();
+
+        assert!(cache.get_entry("v1").is_none());
+        assert!(!path.exists());
+        assert_eq!(cache.project_usage_bytes("proj-a", &VIDEO_KINDS), 0);
+        assert!(cache.failure("v2").is_none());
+    }
+
+    #[test]
+    fn retry_failure_clears_a_recorded_failure_without_touching_others() {
+        let (cache, _dir) = temp_cache("retry");
+        cache.record_failure("k1", "broken");
+        cache.record_failure("k2", "also broken");
+
+        cache.retry_failure("k1");
+
+        assert!(cache.failure("k1").is_none());
+        assert_eq!(cache.failure("k2").as_deref(), Some("also broken"));
+    }
+
+    #[test]
+    fn retrying_a_key_with_no_failure_is_a_quiet_no_op() {
+        let (cache, _dir) = temp_cache("retry-noop");
+        cache.retry_failure("not-a-real-key"); // must not panic
     }
 }

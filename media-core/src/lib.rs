@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! media-core — backend discovery/validation (Phase 1), probing and
 //! verdicts (Phase 3), the conversion cache plus ffmpeg remux/
-//! transcode (Phase 4), and the still-image pipeline via oiiotool/
-//! magick (Phase 5) for the media server (docs/media-server-spec.md
-//! §2, §3, §5, §7).
+//! transcode (Phase 4), the still-image pipeline via oiiotool/magick
+//! (Phase 5), and per-project quota eviction, flush, and explicit retry
+//! (Phase 6) for the media server (docs/media-server-spec.md §2, §3,
+//! §5, §7).
 //!
 //! No Tauri or webview dependency, deliberately: this is the seam a
 //! standalone, differently-hosted media server (the spec's own future —
@@ -31,7 +32,8 @@ use std::path::PathBuf;
 pub use backends::Backends;
 pub use cache::{
     cache_key, delete_orphaned_parts, source_signature, Cache, DerivedParams, EntryInfo,
-    JobInfo, JobState, SourceSignature, StillDerivedParams, PROFILE_VERSION,
+    JobInfo, JobState, SourceSignature, StillDerivedParams, DEFAULT_STILL_CAP_BYTES,
+    DEFAULT_VIDEO_CAP_BYTES, PROFILE_VERSION, STILL_KINDS, VIDEO_KINDS,
 };
 pub use capabilities::Capabilities;
 pub use convert::{spawn_remux, spawn_transcode, wait_with_progress, Spawned};

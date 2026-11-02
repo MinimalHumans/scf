@@ -11,7 +11,10 @@
 //! `/meta` adds ffprobe-based technical facts and the same verdict,
 //! informationally, for `AssetFileFacts` (Phase 3). Still images
 //! (EXR/TIFF/PSD/HEIC/DPX) get the same cache/queue treatment via
-//! oiiotool/magick instead of ffmpeg (Phase 5).
+//! oiiotool/magick instead of ffmpeg (Phase 5). Every `/media` request
+//! now also records which project(s) asked for it and enforces that
+//! project's quota (Phase 6), and `/jobs/<id>/retry` clears a failed
+//! job's negative-cache entry.
 
 mod handles;
 mod queue;
@@ -49,15 +52,17 @@ fn new_token() -> String {
 /// command over it), the shared capability-report registry (so the
 /// caller can expose a "report" command over it — `backends` is passed
 /// in rather than returned, since the Phase 1 detection command already
-/// owns that one), and the accept loop as a bare future. The caller
-/// decides how to drive that future — `tauri::async_runtime::spawn` in
-/// the app, a plain `tokio::spawn` for any other host, per the spec's
-/// own note that this crate is the seam a differently-hosted media
-/// server reuses.
+/// owns that one), the shared [`Queue`] (Phase 6: so the caller can
+/// expose flush/stats commands over its [`media_core::Cache`] — cheap
+/// to clone, same as the other three), and the accept loop as a bare
+/// future. The caller decides how to drive that future — `tauri::
+/// async_runtime::spawn` in the app, a plain `tokio::spawn` for any
+/// other host, per the spec's own note that this crate is the seam a
+/// differently-hosted media server reuses.
 pub fn start(
     backends: media_core::Backends,
     cache_dir: PathBuf,
-) -> std::io::Result<(ServerInfo, Handles, media_core::Capabilities, impl Future<Output = ()>)> {
+) -> std::io::Result<(ServerInfo, Handles, media_core::Capabilities, Queue, impl Future<Output = ()>)> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
@@ -73,7 +78,7 @@ pub fn start(
     let info = ServerInfo { url: format!("http://127.0.0.1:{port}"), token: token.clone() };
     let ctx = serve::Context {
         port, token, handles: handles.clone(), backends,
-        capabilities: capabilities.clone(), probe_cache, still_probe_cache, queue,
+        capabilities: capabilities.clone(), probe_cache, still_probe_cache, queue: queue.clone(),
     };
 
     let accept = async move {
@@ -93,5 +98,5 @@ pub fn start(
         }
     };
 
-    Ok((info, handles, capabilities, accept))
+    Ok((info, handles, capabilities, queue, accept))
 }

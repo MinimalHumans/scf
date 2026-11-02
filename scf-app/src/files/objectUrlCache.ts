@@ -39,6 +39,12 @@
  * layer picker, and a ready result carries its own url directly since
  * an `<img>` (unlike `<video>`) has nothing to reload once the job
  * finishes — the caller just swaps `src`.
+ *
+ * Phase 6 passes `root` along as the asset's project id when
+ * registering a handle, so the media server's per-project cache quota
+ * and flush (docs/media-server-spec.md §7) have something to key on,
+ * and adds `retryJob` (the explicit "Retry" action for a failed job,
+ * spec §7 "Manual actions") alongside the existing `cancelJob`.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -76,7 +82,7 @@ async function register(
   if (absolute === null) return null;
   const [info, handle] = await Promise.all([
     mediaServerInfo(),
-    invoke<string>("media_register_asset", { path: absolute }),
+    invoke<string>("media_register_asset", { path: absolute, projectId: root }),
   ]);
   return { handle, info };
 }
@@ -249,6 +255,31 @@ export async function cancelJob(jobId: string): Promise<void> {
   const info = await mediaServerInfo();
   await fetch(`${info.url}/jobs/${jobId}/cancel?t=${info.token}`, { method: "POST" })
     .catch(() => undefined);
+}
+
+/**
+ * The explicit "Retry" action for a failed job (Phase 6, spec §7
+ * "Manual actions"): clears its cache key's negative-cache entry so the
+ * next `/media` request for it attempts the conversion again. Does not
+ * itself re-request anything — the caller still needs to reload the
+ * `<img>`/`<video>` (or call `startConversion`/`requestStillRender`
+ * again) to actually trigger that next attempt.
+ */
+export async function retryJob(jobId: string): Promise<void> {
+  const info = await mediaServerInfo();
+  await fetch(`${info.url}/jobs/${jobId}/retry?t=${info.token}`, { method: "POST" })
+    .catch(() => undefined);
+}
+
+/**
+ * "Flush project"/"Flush all" (Phase 6, spec §7 "Manual actions"), via
+ * the host rather than the media server's own HTTP API — unlike a job
+ * id, a project id is a real filesystem path, and the host's `invoke`
+ * takes it as a plain argument instead of needing URL-encoding into a
+ * query string. `root: null` flushes the whole cache, every project.
+ */
+export async function flushCache(root: string | null): Promise<void> {
+  await invoke("media_cache_flush", { projectId: root });
 }
 
 /**

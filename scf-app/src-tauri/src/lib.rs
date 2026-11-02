@@ -314,7 +314,7 @@ pub fn run() {
     let media_cache_dir = dirs::cache_dir()
         .expect("a cache directory for this OS")
         .join(pipe::IDENTIFIER);
-    let (media_server_info, media_handles, media_capabilities) =
+    let (media_server_info, media_handles, media_capabilities, media_queue) =
         media_server::start(media_backends.clone(), media_cache_dir)
             .expect("a loopback port for media");
     let relay = mcp_relay::Relay::new();
@@ -339,6 +339,7 @@ pub fn run() {
         .manage(media_server_info)
         .manage(media_handles)
         .manage(media_capabilities)
+        .manage(media_queue)
         .manage(relay.clone())
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -430,6 +431,7 @@ pub fn run() {
         media_server::media_server_info,
         media_server::media_register_asset,
         media_server::media_report_capabilities,
+        media_server::media_cache_flush,
         sql::file_fingerprint,
         sql_socket::sql_socket,
         files::fs_windows,
