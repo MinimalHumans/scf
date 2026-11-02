@@ -565,6 +565,27 @@ impl Queue {
         self.preempted.lock().unwrap().remove(job_id);
         self.pending.lock().unwrap().remove(job_id);
     }
+
+    /// The Media tab's up/down priority chevrons (`serve.rs`'s
+    /// `serve_job_priority`): records the new tier, and — only for a
+    /// job still `queued` — gives it an immediate shot at
+    /// `preempt_if_needed` under that tier. A tokio `Semaphore` has no
+    /// priority of its own (first-come, first-served), so without this
+    /// a bump to `preview` would otherwise sit inert until the job's
+    /// FIFO turn came up anyway, same as if nothing had changed. A
+    /// `running` job, or an id this queue has no `PendingSpec` for
+    /// (finished, cancelled, or never existed), is a quiet no-op:
+    /// there's nothing left to preempt it into or out of.
+    pub fn set_priority(&self, job_id: &str, priority: &str) {
+        self.cache.set_job_priority(job_id, priority);
+        let Some(spec) = self.pending.lock().unwrap().get_mut(job_id).map(|s| {
+            s.priority = priority.to_string();
+            s.clone()
+        }) else { return };
+        if self.cache.get_job(job_id).map(|j| j.state) == Some(JobState::Queued) {
+            self.preempt_if_needed(Priority::parse(priority), pool_of(spec.verdict));
+        }
+    }
 }
 
 /// What [`run_conversion`] needs — bundled so the call doesn't carry
@@ -797,6 +818,43 @@ mod tests {
         let status = queue.worker_status();
         assert_eq!(status.video_max, 3);
         assert_eq!(status.still_max, 5);
+    }
+
+    #[tokio::test]
+    async fn set_priority_updates_the_stored_tier() {
+        let (queue, _dir) = temp_queue("set-priority-stored");
+        let id = queue.cache().create_job("k1", "requested", "ffmpeg", "in.mp4");
+        queue.set_priority(&id, "preview");
+        // `set_job_priority` with no `PendingSpec` for this id (this test
+        // never actually enqueued through `Queue::enqueue`) still writes
+        // the durable row — only the immediate-preemption half is a
+        // no-op without one.
+        assert_eq!(queue.cache().get_job(&id).unwrap().priority, "preview");
+    }
+
+    /// Same direct-state-manipulation style as `preempt_if_needed`'s own
+    /// tests above (a real `ffmpeg` would exit almost instantly against
+    /// these nonexistent paths, long before the async timing this would
+    /// otherwise depend on could be made deterministic).
+    #[tokio::test]
+    async fn bumping_a_queued_jobs_priority_can_preempt_a_running_one() {
+        let (queue, _dir) = temp_queue("set-priority-preempts");
+        let low = queue.cache().create_job("k-low", "background", "ffmpeg", "in.mp4");
+        queue.cache().set_job_running(&low);
+        queue.running_priority.lock().unwrap()
+            .insert(low.clone(), (Priority::Background, Pool::Video));
+        let _permit = queue.video_semaphore.try_acquire().unwrap(); // pool now full
+
+        // A queued job with a `PendingSpec` — `set_priority` needs one
+        // to know which pool to preempt in, the same way `spawn_run`
+        // leaves one behind for a job enqueued the normal way.
+        let waiting = queue.cache().create_job("k-wait", "requested", "ffmpeg", "in2.mp4");
+        queue.pending.lock().unwrap()
+            .insert(waiting.clone(), PendingSpec::from_request(&fake_request("k-wait")));
+
+        queue.set_priority(&waiting, "preview");
+        assert!(queue.preempted.lock().unwrap().contains(&low));
+        assert_eq!(queue.cache().get_job(&waiting).unwrap().priority, "preview");
     }
 
     #[tokio::test]

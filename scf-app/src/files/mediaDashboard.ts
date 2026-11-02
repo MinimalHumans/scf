@@ -22,6 +22,12 @@ import { mediaServerInfo } from "./objectUrlCache.ts";
 
 export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
 
+/** The three tiers `media-server`'s queue actually has (docs/
+ *  media-server-spec.md §6) — `"requested"` is the default a job gets
+ *  when nothing more specific asked for one. */
+export const PRIORITY_TIERS = ["background", "requested", "preview"] as const;
+export type PriorityTier = typeof PRIORITY_TIERS[number];
+
 export interface DashboardJob {
   id: string;
   state: JobState;
@@ -31,6 +37,14 @@ export interface DashboardJob {
   backendId: string | null;
   fileName: string | null;
   progress: number | null;
+  /** The source file's size, read live off disk — `null` when it's no
+   *  longer there to stat, or this is an older job row with no input
+   *  path recorded at all. */
+  sourceBytes: number | null;
+  /** How much the `.part` file holds right now, only while `state` is
+   *  `"running"` — what's actually been written so far, never a
+   *  projected final size (nothing here guesses at one). */
+  partialBytes: number | null;
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;

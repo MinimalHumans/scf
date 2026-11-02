@@ -276,6 +276,21 @@ export async function retryJob(jobId: string): Promise<void> {
 }
 
 /**
+ * The Media tab's up/down priority chevrons — bumps `jobId` to
+ * `priority` (one of `mediaDashboard.ts`'s `PRIORITY_TIERS`). Best-
+ * effort, same as `cancelJob`/`retryJob`: the job may already have
+ * finished by the time this arrives, which is a normal race, not a
+ * failure worth surfacing.
+ */
+export async function setJobPriority(jobId: string, priority: string): Promise<void> {
+  const info = await mediaServerInfo();
+  await fetch(
+    `${info.url}/jobs/${jobId}/priority?t=${info.token}&priority=${priority}`,
+    { method: "POST" },
+  ).catch(() => undefined);
+}
+
+/**
  * "Flush project"/"Flush all" (Phase 6, spec §7 "Manual actions"), via
  * the host rather than the media server's own HTTP API — unlike a job
  * id, a project id is a real filesystem path, and the host's `invoke`

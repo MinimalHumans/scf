@@ -503,6 +503,15 @@ impl Cache {
         );
     }
 
+    /// The Media tab's up/down priority chevrons (`media-server`'s
+    /// `Queue::set_priority`) — just the stored column; reordering an
+    /// already-waiting job's actual turn is that caller's job, this is
+    /// only the durable record of what it asked for.
+    pub fn set_job_priority(&self, id: &str, priority: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute("UPDATE jobs SET priority = ?1 WHERE id = ?2", rusqlite::params![priority, id]);
+    }
+
     fn finish(&self, id: &str, state: JobState, error: Option<&str>, stderr_tail: Option<&str>) {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(

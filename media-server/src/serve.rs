@@ -188,6 +188,13 @@ async fn handle_inner(req: Request<Incoming>, ctx: &Context) -> Res {
             } else {
                 text(StatusCode::METHOD_NOT_ALLOWED, "POST only")
             }
+        } else if let Some(job_id) = rest.strip_suffix("/priority") {
+            if req.method() == hyper::Method::POST {
+                let query = req.uri().query().unwrap_or("").to_string();
+                serve_job_priority(ctx, job_id, priority_param(&query))
+            } else {
+                text(StatusCode::METHOD_NOT_ALLOWED, "POST only")
+            }
         } else {
             serve_job_status(ctx, rest)
         };
@@ -237,10 +244,28 @@ fn serve_jobs_list(ctx: &Context) -> Res {
         let file_name = j.input_path.as_deref()
             .and_then(|p| Path::new(p).file_name())
             .and_then(|n| n.to_str());
+        // Live `fs::metadata`, not a stored column: the source file is
+        // still right there at its original path for as long as the job
+        // exists, so there's no need to have copied its size into
+        // `jobs` at creation time just to show it here. `None` (never
+        // an error) when the source is gone or this is an old job
+        // row with no `input_path` at all — the dashboard just omits
+        // the figure rather than showing a stale or fabricated one.
+        let source_bytes = j.input_path.as_deref()
+            .and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len());
+        // The `.part` file's current size — a running conversion's own
+        // best evidence of how much it has produced so far. Never a
+        // "projected final size": extrapolating from progress is a
+        // guess this deliberately doesn't make (see the Media tab's own
+        // "written so far" label, not "estimated size").
+        let partial_bytes = (j.state == media_core::JobState::Running)
+            .then(|| std::fs::metadata(ctx.queue.cache().tmp_path(&j.id)).ok())
+            .flatten().map(|m| m.len());
         serde_json::json!({
             "id": j.id, "state": j.state, "error": j.error, "stderrTail": j.stderr_tail,
             "priority": j.priority, "backendId": j.backend_id, "fileName": file_name,
             "progress": ctx.queue.progress_of(&j.id),
+            "sourceBytes": source_bytes, "partialBytes": partial_bytes,
             "createdAt": j.created_at, "startedAt": j.started_at, "finishedAt": j.finished_at,
         })
     }).collect();
@@ -259,6 +284,21 @@ fn serve_job_status(ctx: &Context, job_id: &str) -> Res {
 
 fn serve_job_cancel(ctx: &Context, job_id: &str) -> Res {
     ctx.queue.cancel(job_id);
+    json(StatusCode::OK, &serde_json::json!({ "ok": true }))
+}
+
+/// The Media tab's up/down priority chevrons: bumps `job_id` between
+/// the three tiers (`priority_param` already normalizes anything else
+/// to `"requested"`). Updates the job's stored priority immediately;
+/// for a job still `queued` (not yet running), also gives it an
+/// immediate shot at `Queue::preempt_if_needed` under its new priority
+/// — otherwise a tokio `Semaphore`'s FIFO wait list would never reorder
+/// it on its own, and "bump to preview" would do nothing until its turn
+/// came up anyway. A job that's already `running`, or one unknown to
+/// this queue (finished, or never existed), is a quiet no-op either
+/// way — there's nothing left to preempt it into, or out of.
+fn serve_job_priority(ctx: &Context, job_id: &str, priority: &str) -> Res {
+    ctx.queue.set_priority(job_id, priority);
     json(StatusCode::OK, &serde_json::json!({ "ok": true }))
 }
 
