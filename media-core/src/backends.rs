@@ -24,6 +24,10 @@ pub struct Backends {
     /// otherwise) stays untouched — this is purely additive, for the
     /// cache key's `backend_version` component (spec §7 "Key").
     versions: Arc<Mutex<HashMap<String, String>>>,
+    /// Phase 8: this machine's detected hardware encoders per binary
+    /// (really only ever populated for `"ffmpeg"`), same reason it's
+    /// separate from `inner` as `versions` is.
+    hw_encoders: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
 impl Backends {
@@ -59,10 +63,37 @@ impl Backends {
             .unwrap_or_else(|| "unknown".to_string())
     }
 
-    /// Replace every known path (and version) from a fresh
-    /// [`detect_all`](crate::detect_all) result in one go — the usual
-    /// way this registry gets updated, at startup and after every
-    /// Settings → Re-detect.
+    fn set_hw_encoders(&self, id: &str, encoders: Vec<String>) {
+        let mut map = self.hw_encoders.lock().unwrap();
+        if encoders.is_empty() {
+            map.remove(id);
+        } else {
+            map.insert(id.to_string(), encoders);
+        }
+    }
+
+    /// This machine's available hardware encoders for `id` (Phase 8) —
+    /// always empty for anything but `"ffmpeg"`.
+    pub fn hw_encoders(&self, id: &str) -> Vec<String> {
+        self.hw_encoders.lock().unwrap().get(id).cloned().unwrap_or_default()
+    }
+
+    /// The hardware encoder `queue.rs` should prefer for `id`'s next
+    /// transcode, or `None` to fall back to the software default
+    /// (libx264) — nvenc first (the fastest and most broadly available
+    /// of the four this crate knows), then qsv, amf, videotoolbox, in a
+    /// fixed order rather than anything benchmarked on this machine.
+    pub fn best_hw_encoder(&self, id: &str) -> Option<String> {
+        const PREFERENCE: [&str; 4] =
+            ["h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox"];
+        let available = self.hw_encoders(id);
+        PREFERENCE.iter().find(|e| available.iter().any(|a| a == *e)).map(|s| s.to_string())
+    }
+
+    /// Replace every known path (and version, and hardware encoders)
+    /// from a fresh [`detect_all`](crate::detect_all) result in one go
+    /// — the usual way this registry gets updated, at startup and
+    /// after every Settings → Re-detect.
     pub fn update_from(&self, statuses: &[BackendStatus]) {
         for status in statuses {
             let path = if status.ok {
@@ -72,6 +103,7 @@ impl Backends {
             };
             self.set(&status.id, path);
             self.set_version(&status.id, if status.ok { status.version.clone() } else { None });
+            self.set_hw_encoders(&status.id, if status.ok { status.hw_encoders.clone() } else { Vec::new() });
         }
     }
 }
@@ -127,6 +159,37 @@ mod tests {
     fn an_unknown_version_is_a_stable_placeholder_not_empty() {
         let backends = Backends::default();
         assert_eq!(backends.version("ffmpeg"), "unknown");
+    }
+
+    #[test]
+    fn best_hw_encoder_is_none_when_nothing_was_detected() {
+        let backends = Backends::default();
+        assert_eq!(backends.best_hw_encoder("ffmpeg"), None);
+        assert_eq!(backends.hw_encoders("ffmpeg"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn best_hw_encoder_prefers_nvenc_over_other_detected_encoders() {
+        let backends = Backends::default();
+        backends.update_from(&[BackendStatus {
+            id: "ffmpeg".to_string(), path: Some("C:/bin/ffmpeg.exe".to_string()), ok: true,
+            hw_encoders: vec!["h264_qsv".to_string(), "h264_nvenc".to_string()],
+            ..Default::default()
+        }]);
+        assert_eq!(backends.best_hw_encoder("ffmpeg"), Some("h264_nvenc".to_string()));
+    }
+
+    #[test]
+    fn update_from_clears_hw_encoders_when_a_backend_stops_being_ok() {
+        let backends = Backends::default();
+        backends.update_from(&[BackendStatus {
+            id: "ffmpeg".to_string(), path: Some("C:/bin/ffmpeg.exe".to_string()), ok: true,
+            hw_encoders: vec!["h264_nvenc".to_string()], ..Default::default()
+        }]);
+        assert_eq!(backends.best_hw_encoder("ffmpeg"), Some("h264_nvenc".to_string()));
+
+        backends.update_from(&[BackendStatus { id: "ffmpeg".to_string(), ok: false, ..Default::default() }]);
+        assert_eq!(backends.best_hw_encoder("ffmpeg"), None);
     }
 
     #[test]

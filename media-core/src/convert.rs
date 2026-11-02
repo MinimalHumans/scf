@@ -24,20 +24,59 @@ fn remux_args(input: &Path, out_tmp: &Path) -> Vec<String> {
     ]
 }
 
+/// Phase 8: the args that select and configure the video encoder —
+/// `params.hardware_encoder`'s id (already confirmed present in this
+/// machine's `ffmpeg -encoders` output, by `Backends::
+/// best_hw_encoder`) when set, the software default otherwise. Each
+/// hardware encoder takes its quality/rate-control flags under a
+/// different name than libx264's `-crf`; these are the closest
+/// equivalent for each, not independently tuned per vendor.
+fn encoder_args(params: &DerivedParams) -> Vec<String> {
+    match params.hardware_encoder.as_deref() {
+        Some(enc @ "h264_nvenc") => vec![
+            "-c:v".into(), enc.into(), "-preset".into(), "p4".into(),
+            "-cq".into(), params.crf.to_string(),
+        ],
+        Some(enc @ "h264_qsv") => vec![
+            "-c:v".into(), enc.into(), "-global_quality".into(), params.crf.to_string(),
+        ],
+        Some(enc @ "h264_amf") => vec![
+            "-c:v".into(), enc.into(), "-rc".into(), "cqp".into(),
+            "-qp_i".into(), params.crf.to_string(), "-qp_p".into(), params.crf.to_string(),
+        ],
+        Some(enc @ "h264_videotoolbox") => vec![
+            "-c:v".into(), enc.into(), "-q:v".into(), params.crf.to_string(),
+        ],
+        _ => vec![
+            "-c:v".into(), "libx264".into(), "-preset".into(), "veryfast".into(),
+            "-crf".into(), params.crf.to_string(),
+        ],
+    }
+}
+
 fn transcode_args(input: &Path, out_tmp: &Path, params: &DerivedParams) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "-y".into(), "-v".into(), "quiet".into(), "-progress".into(), "pipe:1".into(),
         "-i".into(), input.display().to_string(),
-        "-c:v".into(), "libx264".into(),
-        "-preset".into(), "veryfast".into(),
-        "-crf".into(), params.crf.to_string(),
+    ];
+    args.extend(encoder_args(params));
+    args.extend([
         "-vf".into(), format!("scale='min({},iw)':-2", params.resolution_cap),
         "-pix_fmt".into(), "yuv420p".into(),
-        "-movflags".into(), "+faststart".into(),
+        // Fragmented, not faststart (Phase 8, spec §6 "Video delivery
+        // before completion"): faststart's moov-to-front shuffle only
+        // happens once the whole file is written, so a partial file is
+        // not a valid MP4 until then. Fragments make every already-
+        // written keyframe's worth of output independently playable
+        // the moment it lands on disk — what lets `media-server`'s
+        // `serve.rs` hand a still-running job's `.part` file straight
+        // to the browser.
+        "-movflags".into(), "+frag_keyframe+empty_moov+default_base_moof".into(),
         "-c:a".into(), "aac".into(),
         "-f".into(), "mp4".into(),
         out_tmp.display().to_string(),
-    ]
+    ]);
+    args
 }
 
 /// A spawned ffmpeg conversion. `child` is shared so a caller can kill
@@ -140,6 +179,41 @@ mod tests {
         assert!(args.contains(&"libx264".to_string()));
     }
 
+    /// Phase 8: no hardware encoder configured means libx264, exactly
+    /// as every earlier phase already assumed.
+    #[test]
+    fn transcode_without_a_hardware_encoder_uses_libx264() {
+        let params = DerivedParams { resolution_cap: 1080, crf: 23, ..Default::default() };
+        let args = transcode_args(Path::new("in.mp4"), Path::new("out.part"), &params);
+        assert!(args.contains(&"libx264".to_string()));
+        assert!(!args.iter().any(|a| a.contains("nvenc")));
+    }
+
+    #[test]
+    fn transcode_with_a_hardware_encoder_uses_it_instead_of_libx264() {
+        let params = DerivedParams {
+            resolution_cap: 1080, crf: 23,
+            hardware_encoder: Some("h264_nvenc".to_string()), ..Default::default()
+        };
+        let args = transcode_args(Path::new("in.mp4"), Path::new("out.part"), &params);
+        assert!(args.contains(&"h264_nvenc".to_string()));
+        assert!(!args.contains(&"libx264".to_string()));
+        assert!(args.contains(&"-cq".to_string()));
+    }
+
+    /// Phase 8's progressive delivery depends on the output being
+    /// fragmented, and specifically *not* carrying `+faststart` (which
+    /// needs the whole file before it's a valid MP4 at all).
+    #[test]
+    fn transcode_output_is_fragmented_not_faststart() {
+        let params = DerivedParams { resolution_cap: 1080, crf: 23, ..Default::default() };
+        let args = transcode_args(Path::new("in.mp4"), Path::new("out.part"), &params);
+        let movflags = args.iter().find(|a| a.contains("frag_keyframe"))
+            .expect("movflags should include frag_keyframe");
+        assert!(movflags.contains("empty_moov"));
+        assert!(!movflags.contains("faststart"));
+    }
+
     #[test]
     fn spawning_a_nonexistent_binary_is_an_io_error_not_a_panic() {
         let result = spawn_remux(
@@ -181,6 +255,53 @@ mod tests {
         assert!(result.is_ok(), "{result:?}");
         assert!(output.exists());
         assert!(last_progress > 0.5, "progress only reached {last_progress}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 8, end to end: if this machine's real `ffmpeg` actually
+    /// lists a hardware encoder, transcode with it for real and
+    /// confirm it produces real output — not just that the right args
+    /// get built (the other hardware-encoder tests above are pure
+    /// argument checks; this is the one place anything here actually
+    /// drives a GPU encoder). Ignored by default — run with `cargo
+    /// test -p media-core -- --ignored`.
+    #[test]
+    #[ignore = "depends on this machine's installed backends and GPU"]
+    fn transcoding_with_a_real_hardware_encoder_succeeds_when_one_is_available() {
+        let statuses = crate::detect_all(&std::collections::HashMap::new());
+        let Some(ffmpeg_status) = statuses.iter().find(|s| s.id == "ffmpeg" && s.ok) else {
+            eprintln!("skipping: no real ffmpeg found on this machine");
+            return;
+        };
+        let Some(encoder) = ffmpeg_status.hw_encoders.first().cloned() else {
+            eprintln!("skipping: this machine's ffmpeg reports no known hardware encoder");
+            return;
+        };
+        let ffmpeg = ffmpeg_status.path.clone().unwrap();
+
+        let dir = std::env::temp_dir()
+            .join(format!("media-core-convert-hwenc-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.mp4");
+        let output = dir.join("out.part");
+
+        let status = Command::new(&ffmpeg)
+            .args(["-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=5:duration=1", "-pix_fmt", "yuv420p"])
+            .arg(&input)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let params = DerivedParams {
+            resolution_cap: 1080, crf: 23, hardware_encoder: Some(encoder.clone()), ..Default::default()
+        };
+        let spawned = spawn_transcode(Path::new(&ffmpeg), &input, &output, &params).unwrap();
+        let result = wait_with_progress(spawned, Some(1.0), |_| {});
+
+        assert!(result.is_ok(), "{encoder}: {result:?}");
+        assert!(output.exists());
+        assert!(std::fs::metadata(&output).unwrap().len() > 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -90,6 +90,12 @@ pub struct BackendStatus {
     /// for the settings summary line; Phase 5's still pipeline is where
     /// this becomes load-bearing.
     pub notable: Vec<String>,
+    /// Phase 8: which of `convert.rs`'s known hardware encoders this
+    /// machine's `ffmpeg -encoders` output actually lists — always
+    /// empty for every binary but `ffmpeg` itself. `Backends::
+    /// best_hw_encoder` picks the one `queue.rs` should prefer from
+    /// this, in a fixed order, not benchmarked per machine.
+    pub hw_encoders: Vec<String>,
 }
 
 /// Detect and validate every known backend. `overrides` maps a binary's

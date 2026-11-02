@@ -111,12 +111,19 @@ pub fn source_signature(path: &Path) -> std::io::Result<SourceSignature> {
 /// layer, channel") — both `None` for video and for a still with no
 /// layer structure, so existing cache keys for those cases are
 /// unaffected in shape, only in the extra (empty) bytes hashed.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct DerivedParams {
     pub resolution_cap: u32,
     pub crf: u32,
     pub layer: Option<String>,
     pub channel: Option<String>,
+    /// Phase 8: the hardware encoder to use instead of libx264 (e.g.
+    /// `"h264_nvenc"`, from `Backends::best_hw_encoder`), or `None` for
+    /// the software default. Part of the cache key (below) so switching
+    /// encoders — including the automatic software fallback after a
+    /// hardware failure, see `media-server`'s `queue.rs` — never serves
+    /// a stale result under the same name.
+    pub hardware_encoder: Option<String>,
 }
 
 /// `hash(source_signature, backend_id, backend_version, profile_version,
@@ -142,6 +149,7 @@ pub fn cache_key(
     hasher.write(&params.crf.to_le_bytes());
     hasher.write(params.layer.as_deref().unwrap_or("").as_bytes());
     hasher.write(params.channel.as_deref().unwrap_or("").as_bytes());
+    hasher.write(params.hardware_encoder.as_deref().unwrap_or("").as_bytes());
     format!("{:016x}", hasher.finish())
 }
 
@@ -480,6 +488,21 @@ impl Cache {
         self.finish(id, JobState::Cancelled, None, None);
     }
 
+    /// Phase 8: returns a preempted job to `queued` so its own
+    /// background task can retry it once a slot frees up (spec §6
+    /// "preview jobs preempt: pause or cancel... running job" — this
+    /// crate's queue picks cancel-and-requeue over a real pause). The
+    /// job keeps its id and its place in `jobs`, not a new row;
+    /// `started_at` is cleared so the dashboard's elapsed time reflects
+    /// the retry, not the preempted attempt.
+    pub fn set_job_queued(&self, id: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE jobs SET state = 'queued', started_at = NULL WHERE id = ?1",
+            [id],
+        );
+    }
+
     fn finish(&self, id: &str, state: JobState, error: Option<&str>, stderr_tail: Option<&str>) {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
@@ -816,6 +839,28 @@ mod tests {
         assert_ne!(base, cache_key(sig, "ffmpeg", "6.1", 1, &other_params));
     }
 
+    /// Phase 8: switching to (or away from) a hardware encoder, or
+    /// between two different ones, must never collide with an existing
+    /// software-encoded entry under the same key.
+    #[test]
+    fn cache_key_changes_with_the_hardware_encoder() {
+        let sig = SourceSignature { size: 100, mtime: 1000, edge_hash: 42 };
+        let software = DerivedParams { resolution_cap: 1080, crf: 23, ..Default::default() };
+        let nvenc = DerivedParams {
+            resolution_cap: 1080, crf: 23,
+            hardware_encoder: Some("h264_nvenc".to_string()), ..Default::default()
+        };
+        let qsv = DerivedParams {
+            resolution_cap: 1080, crf: 23,
+            hardware_encoder: Some("h264_qsv".to_string()), ..Default::default()
+        };
+        let a = cache_key(sig, "ffmpeg", "6.1", PROFILE_VERSION, &software);
+        let b = cache_key(sig, "ffmpeg", "6.1", PROFILE_VERSION, &nvenc);
+        let c = cache_key(sig, "ffmpeg", "6.1", PROFILE_VERSION, &qsv);
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+    }
+
     #[test]
     fn cache_key_changes_when_the_source_signature_changes() {
         let params = DerivedParams { resolution_cap: 1080, crf: 23, ..Default::default() };
@@ -864,6 +909,20 @@ mod tests {
         let job = cache.get_job(&id).unwrap();
         assert_eq!(job.state, JobState::Done);
         assert!(job.error.is_none());
+    }
+
+    /// Phase 8: a preempted job goes back to `queued`, not `cancelled`
+    /// or `failed` — its own background task retries it from there.
+    #[test]
+    fn set_job_queued_returns_a_running_job_to_queued_and_clears_started_at() {
+        let (cache, _dir) = temp_cache("jobs-requeue");
+        let id = cache.create_job("k1", "preview", "ffmpeg", "in.mp4");
+        cache.set_job_running(&id);
+        assert!(cache.get_job(&id).unwrap().started_at.is_some());
+        cache.set_job_queued(&id);
+        let job = cache.get_job(&id).unwrap();
+        assert_eq!(job.state, JobState::Queued);
+        assert!(job.started_at.is_none());
     }
 
     #[test]

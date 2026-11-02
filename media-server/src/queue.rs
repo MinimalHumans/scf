@@ -13,9 +13,17 @@
 //! the job's input/tmp paths (`media_core::redact_paths`) before it's
 //! ever stored, since a backend's own error text routinely echoes
 //! back the exact path it was given.
+//!
+//! Phase 8 adds real priority preemption (spec §6 "Priority... Preview
+//! jobs preempt: pause or cancel lowest-priority running job when
+//! slots are full" — [`Queue::preempt_if_needed`]/[`Queue::preempt`])
+//! and an automatic hardware-encoder fallback: a transcode started
+//! with `derived_params.hardware_encoder` set that fails is retried
+//! once with the software encoder before being recorded as a real
+//! failure (see `run_conversion`).
 
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::{Arc, Mutex};
 
@@ -32,16 +40,55 @@ const MAX_VIDEO_JOBS: usize = 1;
 /// pipeline, so this is the first phase that actually needs it.
 const MAX_STILL_JOBS: usize = 2;
 
-/// Not user-configurable yet (the plan's decision 7) — shared with
-/// `serve.rs`, which needs the same values to compute a cache-key
-/// lookup for the `/media` route that this module uses to actually run
-/// the conversion.
-pub(crate) const DERIVED_PARAMS: DerivedParams =
-    DerivedParams { resolution_cap: 1080, crf: 23, layer: None, channel: None };
+/// The software-encoder defaults (spec §7's output profile) — not
+/// user-configurable yet, same as before Phase 8. `serve.rs` starts
+/// from this and fills in `hardware_encoder` itself (from `Backends::
+/// best_hw_encoder`, which this function deliberately takes no
+/// dependency on) before computing its cache-key lookup for the
+/// `/media` route, so the two agree on everything else without this
+/// module needing a `Backends` of its own.
+pub(crate) fn default_derived_params() -> DerivedParams {
+    DerivedParams { resolution_cap: 1080, crf: 23, layer: None, channel: None, hardware_encoder: None }
+}
 
 /// Phase 5's still output profile (spec §7) — shared with `serve.rs`
-/// for the same reason `DERIVED_PARAMS` is.
+/// for the same reason `default_derived_params` is.
 pub(crate) const STILL_DERIVED_PARAMS: StillDerivedParams = StillDerivedParams { max_long_edge: 2048 };
+
+/// Spec §6's three priority tiers. `Ord`'s derived order follows
+/// declaration order, deliberately low to high, so a plain `<`/`min_by`
+/// reads the same way the spec lists them: "preview... > requested...
+/// > background".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Priority {
+    Background,
+    Requested,
+    Preview,
+}
+
+impl Priority {
+    fn parse(s: &str) -> Self {
+        match s {
+            "preview" => Priority::Preview,
+            "background" => Priority::Background,
+            _ => Priority::Requested,
+        }
+    }
+}
+
+/// Which semaphore pool a job draws from — spec §6's "1 video job + 2
+/// still jobs" split, named here so preemption can compare like with
+/// like (a saturated still pool never preempts a video job, or vice
+/// versa — see `Queue::preempt_if_needed`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pool {
+    Video,
+    Still,
+}
+
+fn pool_of(verdict: Verdict) -> Pool {
+    if verdict == Verdict::Render { Pool::Still } else { Pool::Video }
+}
 
 #[derive(Clone)]
 pub struct Queue {
@@ -61,6 +108,23 @@ pub struct Queue {
     /// its absence here is the honest "nothing yet" the frontend
     /// already treats a missing entry as.
     progress: Arc<Mutex<HashMap<String, f64>>>,
+    /// Phase 8: every not-yet-terminal job's full request, owned and
+    /// keyed by job id — enough to call `spawn_run` again when
+    /// `preempt` kills it, from a context (the background task's own
+    /// result handling) that has nothing left of the original caller's
+    /// borrowed `EnqueueRequest` to reuse.
+    pending: Arc<Mutex<HashMap<String, PendingSpec>>>,
+    /// Job ids currently being killed *for preemption*, not a real
+    /// cancel or failure — `spawn_run`'s result handling checks this
+    /// (and removes the entry) to decide whether a killed job's exit
+    /// means "requeue it" or "it really failed."
+    preempted: Arc<Mutex<HashSet<String>>>,
+    /// A running job's priority and pool, kept alongside `running`
+    /// rather than folded into it — this is purely additive, so
+    /// `running`'s existing shape and every call site that reads it
+    /// stays untouched. What `preempt_if_needed` scans to find the
+    /// lowest-priority running job to displace.
+    running_priority: Arc<Mutex<HashMap<String, (Priority, Pool)>>>,
 }
 
 /// Spec §9 dashboard's "Worker status: slots in use". `_max` is each
@@ -79,7 +143,10 @@ pub struct WorkerStatus {
 /// Only present for a [`Verdict::Render`] request — the selection
 /// already resolved against a probe result (see `media_core::
 /// resolve_still_selection`) and the source's own dimensions, needed
-/// to decide whether `still_convert`'s resize cap applies.
+/// to decide whether `still_convert`'s resize cap applies. `Clone`
+/// (Phase 8) so a [`PendingSpec`] can own a copy for a preempted job's
+/// retry.
+#[derive(Clone)]
 pub struct StillRenderRequest {
     pub selection: StillSelection,
     pub width: Option<u32>,
@@ -98,6 +165,49 @@ pub struct EnqueueRequest<'a> {
     pub duration_secs: Option<f64>,
     /// `Some` only for `Verdict::Render`.
     pub still: Option<StillRenderRequest>,
+    /// Phase 8: the resolved output profile, including which hardware
+    /// encoder (if any) to use — `serve.rs` builds this once per
+    /// request (it already needs it for the cache key) and hands it
+    /// straight through rather than this module re-deriving it.
+    pub derived_params: DerivedParams,
+}
+
+/// Phase 8: everything [`Queue::spawn_run`] needs, owned rather than
+/// borrowed. An [`EnqueueRequest`] borrows from its caller's stack and
+/// can't outlive that one call; a preempted job's retry happens later,
+/// from inside the preempted job's *own* background task, long after
+/// the HTTP request that originally created it has returned.
+#[derive(Clone)]
+struct PendingSpec {
+    key: String,
+    priority: String,
+    input: PathBuf,
+    verdict: Verdict,
+    backend_id: String,
+    backend: PathBuf,
+    duration_secs: Option<f64>,
+    still: Option<StillRenderRequest>,
+    derived_params: DerivedParams,
+}
+
+impl PendingSpec {
+    fn from_request(req: &EnqueueRequest<'_>) -> Self {
+        PendingSpec {
+            key: req.key.to_string(), priority: req.priority.to_string(),
+            input: req.input.to_path_buf(), verdict: req.verdict,
+            backend_id: req.backend_id.to_string(), backend: req.backend.to_path_buf(),
+            duration_secs: req.duration_secs, still: req.still.clone(),
+            derived_params: req.derived_params.clone(),
+        }
+    }
+
+    fn as_request(&self) -> EnqueueRequest<'_> {
+        EnqueueRequest {
+            key: &self.key, priority: &self.priority, input: &self.input, verdict: self.verdict,
+            backend_id: &self.backend_id, backend: &self.backend, duration_secs: self.duration_secs,
+            still: self.still.clone(), derived_params: self.derived_params.clone(),
+        }
+    }
 }
 
 fn output_ext(verdict: Verdict) -> &'static str {
@@ -125,6 +235,9 @@ impl Queue {
             still_semaphore: Arc::new(Semaphore::new(MAX_STILL_JOBS)),
             running: Arc::new(Mutex::new(HashMap::new())),
             progress: Arc::new(Mutex::new(HashMap::new())),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            preempted: Arc::new(Mutex::new(HashSet::new())),
+            running_priority: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -155,14 +268,60 @@ impl Queue {
     /// An existing queued/running job for `key` is reused (spec §6
     /// "Dedup"); otherwise a new one is created and its run spawned in
     /// the background. Either way returns the job id to poll.
+    ///
+    /// Phase 8: a genuinely new job starts waiting for a slot first,
+    /// then — only for this new job, dedup already returned above for
+    /// anything already in flight — `preempt_if_needed` may kill a
+    /// lower-priority running job in the same pool to free one sooner
+    /// (spec §6 "Priority... Preview jobs preempt").
     pub fn enqueue(&self, req: EnqueueRequest<'_>) -> String {
         if let Some(existing) = self.cache.active_job_for(req.key) {
             return existing;
         }
         let id = self.cache.create_job(
             req.key, req.priority, req.backend_id, &req.input.display().to_string());
+        self.pending.lock().unwrap().insert(id.clone(), PendingSpec::from_request(&req));
+        let priority = Priority::parse(req.priority);
+        let pool = pool_of(req.verdict);
         self.spawn_run(id.clone(), req);
+        self.preempt_if_needed(priority, pool);
         id
+    }
+
+    /// Spec §6: "preview jobs preempt: pause or cancel lowest-priority
+    /// running job when slots are full." Only ever fires for a
+    /// genuinely new job — a no-op when its pool has an idle slot (the
+    /// new job's own semaphore wait will resolve on its own), or when
+    /// every running job in that pool is already at or above its
+    /// priority (there's nothing lower to displace).
+    fn preempt_if_needed(&self, priority: Priority, pool: Pool) {
+        let full = match pool {
+            Pool::Video => self.video_semaphore.available_permits() == 0,
+            Pool::Still => self.still_semaphore.available_permits() == 0,
+        };
+        if !full {
+            return;
+        }
+        let victim = self.running_priority.lock().unwrap().iter()
+            .filter(|(_, (p, pl))| *pl == pool && *p < priority)
+            .min_by_key(|(_, (p, _))| *p)
+            .map(|(id, _)| id.clone());
+        if let Some(id) = victim {
+            self.preempt(&id);
+        }
+    }
+
+    /// Kills a running job to free its slot for something higher-
+    /// priority, and marks it so `spawn_run`'s result handling retries
+    /// it (from its saved [`PendingSpec`]) instead of recording a
+    /// failure — this crate's queue picks "cancel" over "pause" from
+    /// spec §6's either/or. The job keeps its id and tries again once
+    /// a slot is next free, same as any other queued job.
+    fn preempt(&self, job_id: &str) {
+        self.preempted.lock().unwrap().insert(job_id.to_string());
+        if let Some(child) = self.running.lock().unwrap().get(job_id).cloned() {
+            let _ = child.lock().unwrap().kill();
+        }
     }
 
     fn spawn_run(&self, id: String, req: EnqueueRequest<'_>) {
@@ -174,10 +333,12 @@ impl Queue {
         let backend = req.backend.to_path_buf();
         let duration_secs = req.duration_secs;
         let still = req.still;
-        let semaphore = if verdict == Verdict::Render {
-            queue.still_semaphore.clone()
-        } else {
-            queue.video_semaphore.clone()
+        let derived_params = req.derived_params;
+        let priority = Priority::parse(req.priority);
+        let pool = pool_of(verdict);
+        let semaphore = match pool {
+            Pool::Still => queue.still_semaphore.clone(),
+            Pool::Video => queue.video_semaphore.clone(),
         };
 
         tokio::spawn(async move {
@@ -186,22 +347,37 @@ impl Queue {
 
             // Cancelled while queued, before its turn came up.
             if queue.cache.get_job(&id).map(|j| j.state) != Some(JobState::Queued) {
+                queue.pending.lock().unwrap().remove(&id);
+                queue.preempted.lock().unwrap().remove(&id);
                 return;
             }
             queue.cache.set_job_running(&id);
+            queue.running_priority.lock().unwrap().insert(id.clone(), (priority, pool));
 
             let id_for_run = id.clone();
             let queue_for_run = queue.clone();
             let result = tokio::task::spawn_blocking(move || {
                 run_conversion(&queue_for_run, &id_for_run, ConversionJob {
                     backend_id: &backend_id, backend: &backend, input: &input,
-                    verdict, duration_secs, still,
+                    verdict, duration_secs, still, derived_params: &derived_params,
                 })
             })
             .await;
 
             queue.running.lock().unwrap().remove(&id);
+            queue.running_priority.lock().unwrap().remove(&id);
             queue.progress.lock().unwrap().remove(&id);
+
+            // Killed on purpose by `preempt`, not a real failure — back
+            // to `queued` and try again from the top, from the same
+            // `PendingSpec` this job was created with.
+            if queue.preempted.lock().unwrap().remove(&id) {
+                queue.cache.set_job_queued(&id);
+                if let Some(spec) = queue.pending.lock().unwrap().get(&id).cloned() {
+                    queue.spawn_run(id.clone(), spec.as_request());
+                }
+                return;
+            }
 
             match result {
                 Ok(Ok(())) => {
@@ -209,10 +385,20 @@ impl Queue {
                     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                     queue.cache.put_entry(&key, &path.display().to_string(), bytes, kind_str(verdict));
                     queue.cache.set_job_done(&id);
+                    queue.pending.lock().unwrap().remove(&id);
                 }
                 Ok(Err(f)) => {
-                    queue.cache.record_failure(&key, &f.message);
-                    queue.cache.set_job_failed(&id, &f.message, f.stderr_tail.as_deref());
+                    // A real user cancel (`Queue::cancel`, not
+                    // `preempt`) already set this job's final state
+                    // synchronously, before this task's kill even
+                    // resolved — never downgrade that back to `failed`
+                    // just because the killed process's own exit looks
+                    // like any other failure from here.
+                    if queue.cache.get_job(&id).map(|j| j.state) != Some(JobState::Cancelled) {
+                        queue.cache.record_failure(&key, &f.message);
+                        queue.cache.set_job_failed(&id, &f.message, f.stderr_tail.as_deref());
+                    }
+                    queue.pending.lock().unwrap().remove(&id);
                 }
                 Err(_join_error) => {
                     // The blocking task panicked — treat it the same as
@@ -221,6 +407,7 @@ impl Queue {
                     let msg = "conversion task panicked".to_string();
                     queue.cache.record_failure(&key, &msg);
                     queue.cache.set_job_failed(&id, &msg, None);
+                    queue.pending.lock().unwrap().remove(&id);
                 }
             }
         });
@@ -241,6 +428,12 @@ impl Queue {
             }
         }
         self.progress.lock().unwrap().remove(job_id);
+        self.running_priority.lock().unwrap().remove(job_id);
+        // A real cancel always wins over an in-flight preemption retry
+        // for the same job — never let `spawn_run`'s result handling
+        // requeue something the user just asked to stop.
+        self.preempted.lock().unwrap().remove(job_id);
+        self.pending.lock().unwrap().remove(job_id);
     }
 }
 
@@ -254,6 +447,7 @@ struct ConversionJob<'a> {
     verdict: Verdict,
     duration_secs: Option<f64>,
     still: Option<StillRenderRequest>,
+    derived_params: &'a DerivedParams,
 }
 
 /// A failed conversion's short message (shown everywhere a job's error
@@ -317,7 +511,7 @@ fn run_conversion(queue: &Queue, job_id: &str, job: ConversionJob<'_>) -> Result
         let spawned = if job.verdict == Verdict::Remux {
             media_core::spawn_remux(job.backend, job.input, &tmp)
         } else {
-            media_core::spawn_transcode(job.backend, job.input, &tmp, &DERIVED_PARAMS)
+            media_core::spawn_transcode(job.backend, job.input, &tmp, job.derived_params)
         }
         .map_err(|e| Failure::plain(e.to_string()))?;
 
@@ -326,10 +520,36 @@ fn run_conversion(queue: &Queue, job_id: &str, job: ConversionJob<'_>) -> Result
 
         let job_id_for_progress = job_id.to_string();
         let progress = queue.progress.clone();
-        media_core::wait_with_progress(spawned, job.duration_secs, move |p| {
-            progress.lock().unwrap().insert(job_id_for_progress.clone(), p);
-        })
-        .map_err(|e| Failure::from_wait(e, &tail, &[job.input, &tmp]))?;
+        let result = media_core::wait_with_progress(spawned, job.duration_secs, {
+            let progress = progress.clone();
+            let job_id_for_progress = job_id_for_progress.clone();
+            move |p| { progress.lock().unwrap().insert(job_id_for_progress.clone(), p); }
+        });
+
+        if let Err(e) = result {
+            // Phase 8: a hardware encoder failing (missing driver,
+            // VRAM, a codec this GPU's encoder doesn't actually
+            // support despite being listed in `ffmpeg -encoders`)
+            // falls back to the software encoder once, transparently
+            // — never a job failure the user has to notice and retry
+            // by hand. Only for a transcode: remux never chose an
+            // encoder to begin with, so there's nothing to fall back
+            // from.
+            let can_fall_back =
+                job.verdict == Verdict::Transcode && job.derived_params.hardware_encoder.is_some();
+            if !can_fall_back {
+                return Err(Failure::from_wait(e, &tail, &[job.input, &tmp]));
+            }
+            let software = DerivedParams { hardware_encoder: None, ..job.derived_params.clone() };
+            let retry = media_core::spawn_transcode(job.backend, job.input, &tmp, &software)
+                .map_err(|e| Failure::plain(e.to_string()))?;
+            queue.running.lock().unwrap().insert(job_id.to_string(), retry.child.clone());
+            let retry_tail = retry.stderr_tail.clone();
+            media_core::wait_with_progress(retry, job.duration_secs, move |p| {
+                progress.lock().unwrap().insert(job_id_for_progress.clone(), p);
+            })
+            .map_err(|e| Failure::from_wait(e, &retry_tail, &[job.input, &tmp]))?;
+        }
     }
 
     // A cancel may have killed the process and deleted `.part` just as
@@ -392,6 +612,7 @@ mod tests {
             backend: Path::new("Z:/does/not/exist/ffmpeg.exe"),
             duration_secs: None,
             still: None,
+            derived_params: DerivedParams::default(),
         }
     }
 
@@ -435,6 +656,55 @@ mod tests {
         assert_eq!(status.video_max, MAX_VIDEO_JOBS);
         assert_eq!(status.still_in_use, 0);
         assert_eq!(status.still_max, MAX_STILL_JOBS);
+    }
+
+    /// Phase 8's preemption policy, exercised directly (same module, so
+    /// private fields and `Priority`/`Pool` are reachable) rather than
+    /// through a real running backend — a real `ffmpeg` would exit
+    /// almost instantly against the nonexistent paths these other
+    /// tests use, long before any preemption decision could matter.
+    #[tokio::test]
+    async fn preempt_if_needed_picks_the_lowest_priority_running_job_in_the_same_pool() {
+        let (queue, _dir) = temp_queue("preempt-pick");
+        queue.running_priority.lock().unwrap()
+            .insert("bg".to_string(), (Priority::Background, Pool::Video));
+        queue.running_priority.lock().unwrap()
+            .insert("req".to_string(), (Priority::Requested, Pool::Video));
+        let _permit = queue.video_semaphore.try_acquire().unwrap(); // pool now full
+        queue.preempt_if_needed(Priority::Preview, Pool::Video);
+        let preempted = queue.preempted.lock().unwrap();
+        assert!(preempted.contains("bg"), "should have preempted the lower-priority job");
+        assert!(!preempted.contains("req"));
+    }
+
+    #[tokio::test]
+    async fn preempt_if_needed_does_nothing_when_the_pool_has_room() {
+        let (queue, _dir) = temp_queue("preempt-room");
+        queue.running_priority.lock().unwrap()
+            .insert("bg".to_string(), (Priority::Background, Pool::Video));
+        // No permit taken — the pool still has an idle slot.
+        queue.preempt_if_needed(Priority::Preview, Pool::Video);
+        assert!(queue.preempted.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn preempt_if_needed_does_nothing_when_nothing_running_outranks_it() {
+        let (queue, _dir) = temp_queue("preempt-none-lower");
+        queue.running_priority.lock().unwrap()
+            .insert("already-preview".to_string(), (Priority::Preview, Pool::Video));
+        let _permit = queue.video_semaphore.try_acquire().unwrap();
+        queue.preempt_if_needed(Priority::Preview, Pool::Video);
+        assert!(queue.preempted.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn preempt_if_needed_never_reaches_into_a_different_pool() {
+        let (queue, _dir) = temp_queue("preempt-pool-isolation");
+        queue.running_priority.lock().unwrap()
+            .insert("bg-still".to_string(), (Priority::Background, Pool::Still));
+        let _permit = queue.video_semaphore.try_acquire().unwrap(); // video pool full, still pool untouched
+        queue.preempt_if_needed(Priority::Preview, Pool::Video);
+        assert!(queue.preempted.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -28,6 +28,7 @@ pub fn validate(binary: Binary, path: &Path) -> BackendStatus {
         .and_then(|args| run(path, args))
         .map(|text| notable_tokens(binary, &text))
         .unwrap_or_default();
+    let hw_encoders = detect_hw_encoders(binary, path);
 
     BackendStatus {
         id,
@@ -36,7 +37,29 @@ pub fn validate(binary: Binary, path: &Path) -> BackendStatus {
         ok: true,
         error: None,
         notable,
+        hw_encoders,
     }
+}
+
+/// Phase 8, spec §3's "Record libx264 / hardware encoder availability":
+/// the hardware encoders `convert.rs` actually knows how to drive,
+/// checked against `ffmpeg -encoders`' own output (one encoder name
+/// per line, among much else this doesn't try to parse). Deliberately
+/// a fixed, small list rather than every `*_nvenc`/`*_qsv`/`*_amf`/
+/// `*_videotoolbox` name ffmpeg might report — H.264 only, since the
+/// output profile (spec §7) is H.264 regardless of which encoder
+/// produces it.
+const HW_ENCODERS: &[&str] = &["h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox"];
+
+fn hw_encoders_from_text(text: &str) -> Vec<String> {
+    HW_ENCODERS.iter().filter(|e| text.contains(*e)).map(|s| s.to_string()).collect()
+}
+
+fn detect_hw_encoders(binary: Binary, path: &Path) -> Vec<String> {
+    if binary != Binary::Ffmpeg {
+        return Vec::new();
+    }
+    run(path, &["-encoders"]).map(|text| hw_encoders_from_text(&text)).unwrap_or_default()
 }
 
 /// Runs `path` with `args`, returning stdout, or stderr when stdout is
@@ -137,6 +160,23 @@ mod tests {
     fn empty_output_has_no_version() {
         assert_eq!(parse_version(""), None);
         assert_eq!(parse_version("\n\n  \n"), None);
+    }
+
+    #[test]
+    fn hw_encoders_from_text_finds_only_the_known_ones() {
+        let text = "Encoders:\n V..... h264_nvenc  NVIDIA NVENC H.264\n \
+                     V..... libx264  libx264 H.264\n V..... hevc_nvenc  NVIDIA NVENC HEVC";
+        assert_eq!(hw_encoders_from_text(text), vec!["h264_nvenc".to_string()]);
+    }
+
+    #[test]
+    fn hw_encoders_from_text_is_empty_when_none_are_listed() {
+        assert!(hw_encoders_from_text("V..... libx264  libx264 H.264").is_empty());
+    }
+
+    #[test]
+    fn detect_hw_encoders_is_always_empty_for_a_non_ffmpeg_binary() {
+        assert!(detect_hw_encoders(Binary::Magick, Path::new("Z:/not/real/magick.exe")).is_empty());
     }
 
     #[test]

@@ -5,6 +5,17 @@
 //! ffmpeg-backed cache/queue for video/audio (Phase 4), and the
 //! oiiotool/magick-backed still pipeline for EXR/TIFF/PSD/HEIC/DPX
 //! (Phase 5, this module's `serve_still_media`/`still_meta_response`).
+//!
+//! Phase 8 adds a `priority` query param (spec §6's three tiers,
+//! parsed by `queue::Priority`; unrecognized or absent means
+//! `"requested"`, exactly today's behavior) and, only when a caller
+//! opts into `priority=preview` on a still-running transcode,
+//! progressive delivery straight from that job's growing `.part` file
+//! (`serve_growing_file`) instead of the usual `202` — see
+//! `convert.rs`'s fragmented-MP4 output, which is what makes a partial
+//! file playable at all. Every other caller — in particular
+//! `startConversion`'s explicit "Convert for preview" kick-off, which
+//! depends on always getting a `202` back — is unaffected.
 
 use std::convert::Infallible;
 use std::fs::File;
@@ -17,7 +28,7 @@ use hyper::{Request, Response, StatusCode};
 
 use media_core::Verdict;
 
-use crate::queue::{StillRenderRequest, DERIVED_PARAMS};
+use crate::queue::StillRenderRequest;
 use crate::{Handles, Queue};
 
 #[derive(Clone)]
@@ -30,6 +41,18 @@ pub struct Context {
     pub probe_cache: media_core::ProbeCache,
     pub still_probe_cache: media_core::StillProbeCache,
     pub queue: Queue,
+}
+
+/// `/media`'s query-string options, bundled (Phase 8) so `serve_media`/
+/// `serve_still_media` don't each carry three more loose parameters on
+/// top of everything else they already take. `layer`/`channel` only
+/// ever matter for an EXR; `priority` is spec §6's three tiers, parsed
+/// by `priority_param`.
+#[derive(Clone, Copy)]
+struct MediaRequest<'a> {
+    layer: Option<&'a str>,
+    channel: Option<&'a str>,
+    priority: &'a str,
 }
 
 /// Still formats a browser can never natively decode but that a
@@ -61,6 +84,19 @@ fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
         let (k, v) = pair.split_once('=')?;
         (k == key).then_some(v)
     })
+}
+
+/// Spec §6's three priority tiers, read straight off the query string
+/// (Phase 8) — anything other than `"preview"`/`"background"` means
+/// `"requested"`, which is also what an absent `priority` param means,
+/// so every caller from before this phase keeps its exact previous
+/// behavior.
+fn priority_param(query: &str) -> &'static str {
+    match query_param(query, "priority") {
+        Some("preview") => "preview",
+        Some("background") => "background",
+        _ => "requested",
+    }
 }
 
 fn authorized(req: &Request<Incoming>, ctx: &Context) -> bool {
@@ -173,12 +209,12 @@ async fn handle_inner(req: Request<Incoming>, ctx: &Context) -> Res {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
             let query = req.uri().query().unwrap_or("").to_string();
-            let layer = query_param(&query, "layer").map(str::to_string);
-            let channel = query_param(&query, "channel").map(str::to_string);
-            serve_media(
-                ctx, Path::new(&path), range_header.as_deref(),
-                layer.as_deref(), channel.as_deref(), &project_ids,
-            )
+            let request = MediaRequest {
+                layer: query_param(&query, "layer"),
+                channel: query_param(&query, "channel"),
+                priority: priority_param(&query),
+            };
+            serve_media(ctx, Path::new(&path), range_header.as_deref(), request, &project_ids)
         }
         "/meta" => serve_meta(ctx, Path::new(&path)),
         _ => text(StatusCode::NOT_FOUND, "no such route"),
@@ -251,11 +287,11 @@ fn serve_job_retry(ctx: &Context, job_id: &str) -> Res {
 /// incidentally fail for some other reason.
 fn serve_media(
     ctx: &Context, path: &Path, range_header: Option<&str>,
-    layer: Option<&str>, channel: Option<&str>, project_ids: &[String],
+    request: MediaRequest<'_>, project_ids: &[String],
 ) -> Res {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         if let Some(backend_id) = still_backend_for(&ext.to_lowercase()) {
-            return serve_still_media(ctx, path, range_header, backend_id, layer, channel, project_ids);
+            return serve_still_media(ctx, path, range_header, backend_id, request, project_ids);
         }
     }
 
@@ -279,8 +315,16 @@ fn serve_media(
             let ffmpeg = ctx.backends.get("ffmpeg")
                 .expect("classify() only returns Remux/Transcode when ffmpeg is configured");
             let version = ctx.backends.version("ffmpeg");
+            // Phase 8: a hardware encoder is only ever relevant to an
+            // actual encode — remux (`-c copy`) never touches it, so
+            // its cache key stays unaffected by whatever GPU happens to
+            // be in this machine.
+            let mut params = crate::queue::default_derived_params();
+            if verdict == Verdict::Transcode {
+                params.hardware_encoder = ctx.backends.best_hw_encoder("ffmpeg");
+            }
             let key = media_core::cache_key(
-                sig, "ffmpeg", &version, media_core::PROFILE_VERSION, &DERIVED_PARAMS);
+                sig, "ffmpeg", &version, media_core::PROFILE_VERSION, &params);
 
             for pid in project_ids {
                 ctx.queue.cache().add_ref(pid, &key);
@@ -293,13 +337,27 @@ fn serve_media(
                 json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({ "error": error }))
             } else {
                 let job_id = ctx.queue.enqueue(crate::queue::EnqueueRequest {
-                    key: &key, priority: "requested", input: path, verdict,
+                    key: &key, priority: request.priority, input: path, verdict,
                     backend_id: "ffmpeg", backend: &ffmpeg,
                     duration_secs: probe.duration_secs, still: None,
+                    derived_params: params,
                 });
-                json(StatusCode::ACCEPTED, &serde_json::json!({
+
+                // Phase 8, spec §6 "Video delivery before completion":
+                // only when the caller opted in with `priority=preview`
+                // (never for `startConversion`'s plain kick-off, which
+                // depends on always getting a `202` here) and the job
+                // is a transcode already running — a brand-new job's
+                // `.part` is still empty, so this is a no-op for it.
+                let progressive = (request.priority == "preview" && verdict == Verdict::Transcode)
+                    .then(|| ctx.queue.cache().get_job(&job_id))
+                    .flatten()
+                    .filter(|j| j.state == media_core::JobState::Running)
+                    .and_then(|_| serve_growing_file(&ctx.queue.cache().tmp_path(&job_id), range_header));
+
+                progressive.unwrap_or_else(|| json(StatusCode::ACCEPTED, &serde_json::json!({
                     "jobId": job_id, "state": "queued",
-                }))
+                })))
             };
 
             // Enforcement "at write time" (spec §6/§7): after the
@@ -328,8 +386,9 @@ fn serve_media(
 /// error.
 fn serve_still_media(
     ctx: &Context, path: &Path, range_header: Option<&str>, backend_id: &str,
-    layer: Option<&str>, channel: Option<&str>, project_ids: &[String],
+    request: MediaRequest<'_>, project_ids: &[String],
 ) -> Res {
+    let (layer, channel) = (request.layer, request.channel);
     let Some(backend_path) = ctx.backends.get(backend_id) else {
         return serve_file(path, range_header); // spec §5: no backend -> raw passthrough
     };
@@ -365,7 +424,7 @@ fn serve_still_media(
     // phase's scope calls for.
     let params = media_core::DerivedParams {
         layer: layer.map(str::to_string), channel: channel.map(str::to_string),
-        resolution_cap: 0, crf: 0,
+        resolution_cap: 0, crf: 0, hardware_encoder: None,
     };
     let key = media_core::cache_key(sig, backend_id, &version, media_core::PROFILE_VERSION, &params);
     let selection = media_core::resolve_still_selection(&probe, layer, channel);
@@ -381,9 +440,10 @@ fn serve_still_media(
         json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({ "error": error }))
     } else {
         let job_id = ctx.queue.enqueue(crate::queue::EnqueueRequest {
-            key: &key, priority: "requested", input: path, verdict,
+            key: &key, priority: request.priority, input: path, verdict,
             backend_id, backend: &backend_path, duration_secs: None,
             still: Some(StillRenderRequest { selection, width: probe.width, height: probe.height }),
+            derived_params: params,
         });
         json(StatusCode::ACCEPTED, &serde_json::json!({ "jobId": job_id, "state": "queued" }))
     };
@@ -591,6 +651,72 @@ fn serve_file(path: &Path, range_header: Option<&str>) -> Res {
     }
 }
 
+/// Phase 8, spec §6 "Video delivery before completion": like
+/// `serve_file`, but for a transcode job's still-growing `.part`
+/// output rather than a finished entry. Re-stats the file on every
+/// call rather than trusting any cached length — the whole trick is
+/// that the file keeps growing between requests, and each request
+/// just reads whatever is on disk *right now*.
+///
+/// Differs from `serve_file` in exactly the two places "it might get
+/// longer" matters: a range past the current end gets a `503` with
+/// `Retry-After` (the bytes may exist very soon) instead of a
+/// permanent `416`, and a satisfied range's `Content-Range` reports
+/// the total as `*` (RFC 7233: unknown) rather than this instant's
+/// length, which the next request may already have grown past.
+///
+/// `None` when there's nothing worth serving yet — no `.part` file, or
+/// an empty one (ffmpeg hasn't flushed its first fragment) — so the
+/// caller falls back to the ordinary `202`, same as every phase before
+/// this one.
+fn serve_growing_file(tmp: &Path, range_header: Option<&str>) -> Option<Res> {
+    let mut file = File::open(tmp).ok()?;
+    let len = file.metadata().ok()?.len();
+    if len == 0 {
+        return None;
+    }
+
+    let outcome = range_header.map_or(RangeOutcome::Full, |h| parse_range(h, len));
+    Some(match outcome {
+        RangeOutcome::Unsatisfiable => Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .header(hyper::header::RETRY_AFTER, "1")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+        RangeOutcome::Range(start, end) => {
+            let count = (end - start + 1) as usize;
+            if file.seek(SeekFrom::Start(start)).is_err() {
+                return Some(text(StatusCode::INTERNAL_SERVER_ERROR, "seek failed"));
+            }
+            let mut buf = vec![0u8; count];
+            if file.read_exact(&mut buf).is_err() {
+                return Some(text(StatusCode::INTERNAL_SERVER_ERROR, "read failed"));
+            }
+            Response::builder()
+                .status(StatusCode::PARTIAL_CONTENT)
+                .header(hyper::header::CONTENT_TYPE, "video/mp4")
+                .header(hyper::header::ACCEPT_RANGES, "bytes")
+                .header(hyper::header::CONTENT_RANGE, format!("bytes {start}-{end}/*"))
+                .header(hyper::header::CONTENT_LENGTH, count.to_string())
+                .body(Full::new(Bytes::from(buf)))
+                .unwrap()
+        }
+        RangeOutcome::Full => {
+            let mut buf = Vec::with_capacity(len as usize);
+            if file.read_to_end(&mut buf).is_err() {
+                return Some(text(StatusCode::INTERNAL_SERVER_ERROR, "read failed"));
+            }
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(hyper::header::CONTENT_TYPE, "video/mp4")
+                .header(hyper::header::ACCEPT_RANGES, "bytes")
+                .header(hyper::header::CONTENT_LENGTH, buf.len().to_string())
+                .body(Full::new(Bytes::from(buf)))
+                .unwrap()
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,6 +830,50 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
+    /// Phase 8's progressive delivery: nothing to serve yet means
+    /// `None`, not an empty `200` — the caller falls back to the
+    /// ordinary `202`.
+    #[test]
+    fn serve_growing_file_is_none_for_a_missing_or_empty_part() {
+        let missing = std::env::temp_dir().join("media-server-test-no-such-part.part");
+        assert!(serve_growing_file(&missing, None).is_none());
+
+        let empty = TempFile::with_bytes("empty.part", b"");
+        assert!(serve_growing_file(&empty.path, None).is_none());
+    }
+
+    #[tokio::test]
+    async fn serve_growing_file_serves_whatever_is_on_disk_right_now() {
+        let file = TempFile::with_bytes("growing-full.part", b"hello world");
+        let res = serve_growing_file(&file.path, None).unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_bytes(res).await, b"hello world");
+    }
+
+    /// A range already available on disk comes back as `206`, but with
+    /// the total reported as `*` (unknown) rather than this instant's
+    /// length — the next request may already have grown past it.
+    #[tokio::test]
+    async fn serve_growing_file_reports_an_unknown_total_length_on_a_satisfied_range() {
+        let file = TempFile::with_bytes("growing-ranged.part", b"hello world");
+        let res = serve_growing_file(&file.path, Some("bytes=6-10")).unwrap();
+        assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
+        let content_range = res.headers().get(hyper::header::CONTENT_RANGE).unwrap().clone();
+        assert_eq!(content_range, "bytes 6-10/*");
+        assert_eq!(body_bytes(res).await, b"world");
+    }
+
+    /// A range past what's on disk *yet* is a `503` ("try again
+    /// shortly"), never the permanent `416` `serve_file` would give a
+    /// finished file for the same request.
+    #[test]
+    fn serve_growing_file_answers_a_range_past_the_current_end_with_a_retryable_503() {
+        let file = TempFile::with_bytes("growing-not-yet.part", b"hello world");
+        let res = serve_growing_file(&file.path, Some("bytes=1000-2000")).unwrap();
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(res.headers().get(hyper::header::RETRY_AFTER).is_some());
+    }
+
     fn test_ctx(backends: media_core::Backends) -> Context {
         // A fresh, unique cache dir per context — never cleaned up, but
         // tiny (an empty SQLite file) and under the OS temp dir, same
@@ -759,7 +929,10 @@ mod tests {
         let ctx = test_ctx(media_core::Backends::default());
         let data = b"not really an exr, content doesn't matter here";
         let file = TempFile::with_bytes("fake.exr", data);
-        let res = serve_media(&ctx, &file.path, None, None, None, &[]);
+        let res = serve_media(
+            &ctx, &file.path, None,
+            MediaRequest { layer: None, channel: None, priority: "requested" }, &[],
+        );
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(body_bytes(res).await, data);
     }
@@ -774,7 +947,10 @@ mod tests {
         backends.set("magick", Some(std::path::PathBuf::from("Z:/definitely/not/magick.exe")));
         let ctx = test_ctx(backends);
         let file = TempFile::with_bytes("broken.tiff", b"whatever");
-        let res = serve_media(&ctx, &file.path, None, None, None, &[]);
+        let res = serve_media(
+            &ctx, &file.path, None,
+            MediaRequest { layer: None, channel: None, priority: "requested" }, &[],
+        );
         assert_eq!(res.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
@@ -857,7 +1033,10 @@ mod tests {
         let ctx = test_ctx(backends);
 
         let project_ids = vec!["proj-still-test".to_string()];
-        let first = serve_media(&ctx, &input, None, None, None, &project_ids);
+        let first = serve_media(
+            &ctx, &input, None,
+            MediaRequest { layer: None, channel: None, priority: "requested" }, &project_ids,
+        );
         assert_eq!(first.status(), StatusCode::ACCEPTED);
         let body: serde_json::Value =
             serde_json::from_slice(&body_bytes(first).await).unwrap();
@@ -878,7 +1057,10 @@ mod tests {
             }
         }
 
-        let second = serve_media(&ctx, &input, None, None, None, &project_ids);
+        let second = serve_media(
+            &ctx, &input, None,
+            MediaRequest { layer: None, channel: None, priority: "requested" }, &project_ids,
+        );
         assert_eq!(second.status(), StatusCode::OK);
         let converted = body_bytes(second).await;
         assert!(!converted.is_empty());
@@ -978,7 +1160,10 @@ mod tests {
         assert_eq!(verdict, media_core::Verdict::Remux, "fixture's verdict was {verdict:?}");
 
         let project_ids = vec!["proj-remux-test".to_string()];
-        let first = serve_media(&ctx, &input, None, None, None, &project_ids);
+        let first = serve_media(
+            &ctx, &input, None,
+            MediaRequest { layer: None, channel: None, priority: "requested" }, &project_ids,
+        );
         assert_eq!(first.status(), StatusCode::ACCEPTED);
         let body: serde_json::Value =
             serde_json::from_slice(&body_bytes(first).await).unwrap();
@@ -999,7 +1184,10 @@ mod tests {
             }
         }
 
-        let second = serve_media(&ctx, &input, None, None, None, &project_ids);
+        let second = serve_media(
+            &ctx, &input, None,
+            MediaRequest { layer: None, channel: None, priority: "requested" }, &project_ids,
+        );
         assert_eq!(second.status(), StatusCode::OK);
         let converted = body_bytes(second).await;
         assert!(!converted.is_empty());
@@ -1016,6 +1204,88 @@ mod tests {
         assert!(ctx.queue.cache().project_usage_bytes("proj-remux-test", &media_core::VIDEO_KINDS) > 0);
         ctx.queue.cache().flush_project("proj-remux-test");
         assert_eq!(ctx.queue.cache().project_usage_bytes("proj-remux-test", &media_core::VIDEO_KINDS), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 8's progressive delivery, end to end: a real transcode (a
+    /// codec outside `classify`'s `LIKELY_DECODABLE`, so it comes back
+    /// `Transcode` against this test's default, nothing-reported
+    /// `Capabilities`), long enough that it's still `running` by the
+    /// time a follow-up request arrives. Only a `priority=preview`
+    /// request ever sees this: it gets real bytes straight off the
+    /// job's growing `.part` file instead of the usual `202`, well
+    /// before the job itself reaches `done`. Ignored by default — run
+    /// with `cargo test -p media-server -- --ignored`.
+    #[tokio::test]
+    #[ignore = "depends on this machine's installed backends"]
+    async fn media_serves_a_running_transcode_progressively_when_asked_as_preview() {
+        let statuses = media_core::detect_all(&std::collections::HashMap::new());
+        let ffmpeg = statuses.iter().find(|s| s.id == "ffmpeg" && s.ok)
+            .and_then(|s| s.path.clone());
+        let ffprobe = statuses.iter().find(|s| s.id == "ffprobe" && s.ok)
+            .and_then(|s| s.path.clone());
+        let (Some(ffmpeg), Some(ffprobe)) = (ffmpeg, ffprobe) else {
+            eprintln!("skipping: no real ffmpeg/ffprobe found on this machine");
+            return;
+        };
+
+        let dir = std::env::temp_dir()
+            .join(format!("media-server-test-progressive-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.mp4");
+        // Big and long enough that the transcode is still running when
+        // the follow-up request below arrives — the other fixtures
+        // here are one tiny frame, already done by then.
+        let status = std::process::Command::new(&ffmpeg)
+            .args(["-y", "-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30:duration=8",
+                   "-pix_fmt", "yuv420p", "-c:v", "mpeg2video"])
+            .arg(&input)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let backends = media_core::Backends::default();
+        backends.set("ffmpeg", Some(std::path::PathBuf::from(&ffmpeg)));
+        backends.set("ffprobe", Some(std::path::PathBuf::from(&ffprobe)));
+        let ctx = test_ctx(backends);
+
+        let probe = ctx.probe_cache.probe(Path::new(&ffprobe), &input).unwrap();
+        let verdict = media_core::classify(&probe, &ctx.capabilities, &ctx.backends);
+        assert_eq!(verdict, media_core::Verdict::Transcode, "fixture's verdict was {verdict:?}");
+
+        let project_ids = vec!["proj-progressive-test".to_string()];
+        let first = serve_media(
+            &ctx, &input, None,
+            MediaRequest { layer: None, channel: None, priority: "preview" }, &project_ids,
+        );
+        assert_eq!(first.status(), StatusCode::ACCEPTED, "nothing on disk yet for the very first request");
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes(first).await).unwrap();
+        let job_id = body["jobId"].as_str().unwrap().to_string();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut saw_progressive_bytes = false;
+        while !saw_progressive_bytes {
+            let job = ctx.queue.cache().get_job(&job_id).unwrap();
+            assert_ne!(job.state, media_core::JobState::Failed, "{:?}", job.error);
+            assert_ne!(job.state, media_core::JobState::Cancelled);
+            if job.state == media_core::JobState::Done {
+                break; // ran to completion before we ever caught it mid-flight; not a failure
+            }
+            assert!(std::time::Instant::now() < deadline, "job did not finish in time");
+
+            let res = serve_media(
+                &ctx, &input, None,
+                MediaRequest { layer: None, channel: None, priority: "preview" }, &project_ids,
+            );
+            if res.status() == StatusCode::OK || res.status() == StatusCode::PARTIAL_CONTENT {
+                saw_progressive_bytes = true;
+                assert!(!body_bytes(res).await.is_empty());
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+        assert!(saw_progressive_bytes, "never observed bytes served from the still-running job");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
