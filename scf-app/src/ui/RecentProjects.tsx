@@ -6,7 +6,7 @@
  * are marked, not hidden — the whole point of a history list is
  * seeing what is there before clicking it.
  *
- * Read-only: forgetting an entry is a Settings action (SettingsDialog's
+ * Read-only: forgetting an entry is a Settings action (SettingsPane's
  * Local data section), not this screen's — one place to edit app.db's
  * project history, not two that can disagree. `recentProjectsRevision`
  * is how this list learns Settings changed something while both were

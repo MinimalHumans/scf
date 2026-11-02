@@ -155,7 +155,7 @@ export function Workbench(): JSX.Element {
   const environmentRevision = useStoreRaw((s) => s.environmentRevision);
   useEffect(() => { void resolveAssets(); }, [environmentRevision, resolveAssets]);
 
-  const { ctx: commandCtx, about, settings, licenses } = useAppCommands({
+  const { ctx: commandCtx, about, licenses } = useAppCommands({
     hasProject: true, identityOpen,
     toggleIdentity: () => { setIdentityOpen((v) => !v); },
   });
@@ -252,7 +252,6 @@ export function Workbench(): JSX.Element {
       <TitleStrip ctx={commandCtx} search={<SearchBox />}
                   status={<SaveControls />} />
       {about}
-      {settings}
       {licenses}
       {front !== "project" ? <ToolPane id={front} /> : (
       <div className={"panels" +

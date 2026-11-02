@@ -8,14 +8,15 @@ import {
 } from "../../commands/registry.ts";
 import { useSettings } from "../../state/settings.ts";
 import { AboutDialog } from "./AboutDialog.tsx";
-import { SettingsDialog } from "./SettingsDialog.tsx";
 import { LicensesDialog } from "./LicensesDialog.tsx";
 
 /**
  * What the menu and the shortcuts act through, for whichever screen has
  * the title strip: the open project's workbench or the start screen.
- * Also owns the About and Settings dialogs and the keyboard shortcuts,
- * so each screen only says what is true of it.
+ * Also owns the About dialog, the Licenses dialog, and the keyboard
+ * shortcuts, so each screen only says what is true of it. Settings is
+ * a tool tab (state/tabs.ts), not a dialog this hook owns — showSettings
+ * just opens it, the same as openEventLog does for the event log.
  */
 export function useAppCommands(screen: {
   hasProject: boolean;
@@ -24,11 +25,9 @@ export function useAppCommands(screen: {
 }): {
   ctx: CommandContext;
   about: JSX.Element | null;
-  settings: JSX.Element | null;
   licenses: JSX.Element | null;
 } {
   const [aboutOpen, setAboutOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [licensesOpen, setLicensesOpen] = useState(false);
   const developerMode = useSettings((s) => s.developerMode);
   const { assetRoot, assetRootStatus, hostStatus, newProject,
@@ -49,7 +48,7 @@ export function useAppCommands(screen: {
     toggleIdentity: screen.toggleIdentity,
     identityOpen: screen.identityOpen,
     showAbout: () => { setAboutOpen(true); },
-    showSettings: () => { setSettingsOpen(true); },
+    showSettings: () => { useTabs.getState().openTool("settings"); },
     showLicenses: () => { setLicensesOpen(true); },
     exitApp: () => { void invoke("quit_app"); },
     openEventLog: () => { useTabs.getState().openTool("events"); },
@@ -71,8 +70,6 @@ export function useAppCommands(screen: {
     ctx,
     about: aboutOpen ? <AboutDialog onClose={() => setAboutOpen(false)} />
       : null,
-    settings: settingsOpen
-      ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null,
     licenses: licensesOpen
       ? <LicensesDialog onClose={() => setLicensesOpen(false)} /> : null,
   };

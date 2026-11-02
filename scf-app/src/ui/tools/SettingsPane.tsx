@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * SettingsDialog — app settings, on their own rather than folded into
- * the tab strip: Settings reaches across every project tab and the
- * start screen alike, so it is a dialog over whichever screen is
- * showing, not a tool tab competing with project and event-log tabs
- * for the same row.
+ * SettingsPane — app settings, as a tool tab (state/tabs.ts) alongside
+ * the event log: reaches across every project tab and the start screen
+ * alike (ToolPane.tsx renders it from both App.tsx's StartShell and
+ * Workbench.tsx), so it doesn't need to be a dialog to do that — the
+ * event log already proves a tool tab can.
  *
- * Two sections, not four: General (tab-remembering, developer mode —
- * both one-line toggles with nothing else to say) and Local data
- * (project pairings and the event log, grouped under one heading
- * because both are app.db/audit.db cache, not project content — and
- * because that framing is also the reason Settings, not the start
- * screen's recent-projects list, is the one place that forgets a
- * project). Each inner piece still owns its own fetch and error state,
- * so one failing cannot blank the rest.
+ * Three sections: General (tab-remembering, developer mode — both
+ * one-line toggles with nothing else to say), Local data (project
+ * pairings and the event log, grouped under one heading because both
+ * are app.db/audit.db cache, not project content — and because that
+ * framing is also the reason Settings, not the start screen's
+ * recent-projects list, is the one place that forgets a project), and
+ * Backends (the external tools the media server looks for). Each inner
+ * piece still owns its own fetch and error state, so one failing
+ * cannot blank the rest.
  */
 
 import { useEffect, useState } from "react";
@@ -211,7 +212,7 @@ function ProjectsSection(): JSX.Element {
   );
 }
 
-function EventLogSection({ onClose }: { onClose: () => void }): JSX.Element {
+function EventLogSection(): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -247,7 +248,6 @@ function EventLogSection({ onClose }: { onClose: () => void }): JSX.Element {
 
   const openEventLog = (): void => {
     useTabs.getState().openTool("events");
-    onClose();
   };
 
   return (
@@ -272,7 +272,7 @@ function EventLogSection({ onClose }: { onClose: () => void }): JSX.Element {
   );
 }
 
-function DataSection({ onClose }: { onClose: () => void }): JSX.Element {
+function DataSection(): JSX.Element {
   return (
     <section>
       <h3>Local data</h3>
@@ -283,7 +283,7 @@ function DataSection({ onClose }: { onClose: () => void }): JSX.Element {
         just reads it.
       </p>
       <ProjectsSection />
-      <EventLogSection onClose={onClose} />
+      <EventLogSection />
     </section>
   );
 }
@@ -365,7 +365,9 @@ function BackendsSection(): JSX.Element {
         None are bundled; point at your own copy if it isn't on PATH.
       </p>
       <div className="settings-row">
-        <button className="ghost tiny" disabled={busy} onClick={() => void refresh()}>
+        <button className="ghost tiny settings-redetect" disabled={busy}
+                onClick={() => void refresh()}>
+          <span className="settings-redetect-icon" aria-hidden="true">↻</span>
           {busy ? "Checking…" : "Re-detect"}
         </button>
       </div>
@@ -428,40 +430,24 @@ function BackendsSection(): JSX.Element {
   );
 }
 
-export function SettingsDialog({ onClose }: { onClose: () => void }):
-    JSX.Element {
+export function SettingsPane(): JSX.Element {
   const [section, setSection] = useState<Section>("general");
   return (
-    <div className="modal-scrim" role="dialog" aria-modal="true"
-         aria-labelledby="settings-dialog-title"
-         onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
-         onClick={onClose}>
-      <div className="modal settings-dialog"
-           onClick={(e) => { e.stopPropagation(); }}>
-        <div className="modal-head">
-          <h2 id="settings-dialog-title">Settings</h2>
-          <button className="ghost tiny" aria-label="Close" autoFocus
-                  onClick={onClose}>
-            ×
+    <div className="settings-body">
+      <nav className="settings-nav" aria-label="Settings sections">
+        {SECTIONS.map((s) => (
+          <button key={s.id} role="tab" aria-selected={section === s.id}
+                  className={"settings-nav-item" +
+                             (section === s.id ? " active" : "")}
+                  onClick={() => setSection(s.id)}>
+            {s.label}
           </button>
-        </div>
-        <div className="settings-body">
-          <nav className="settings-nav" aria-label="Settings sections">
-            {SECTIONS.map((s) => (
-              <button key={s.id} role="tab" aria-selected={section === s.id}
-                      className={"settings-nav-item" +
-                                 (section === s.id ? " active" : "")}
-                      onClick={() => setSection(s.id)}>
-                {s.label}
-              </button>
-            ))}
-          </nav>
-          <div className="settings-content">
-            {section === "general" && <GeneralSection />}
-            {section === "data" && <DataSection onClose={onClose} />}
-            {section === "backends" && <BackendsSection />}
-          </div>
-        </div>
+        ))}
+      </nav>
+      <div className="settings-content">
+        {section === "general" && <GeneralSection />}
+        {section === "data" && <DataSection />}
+        {section === "backends" && <BackendsSection />}
       </div>
     </div>
   );
