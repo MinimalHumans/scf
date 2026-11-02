@@ -35,6 +35,45 @@ export function GearIcon(): JSX.Element {
   );
 }
 
+/** Precedes the "Event log" label, to match {@link GearIcon}. */
+export function EventLogIcon(): JSX.Element {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true"
+         className="tab-tool-icon" fill="none" stroke="currentColor"
+         strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="8" y1="6" x2="21" y2="6" />
+      <line x1="8" y1="12" x2="21" y2="12" />
+      <line x1="8" y1="18" x2="21" y2="18" />
+      <line x1="3" y1="6" x2="3.01" y2="6" />
+      <line x1="3" y1="12" x2="3.01" y2="12" />
+      <line x1="3" y1="18" x2="3.01" y2="18" />
+    </svg>
+  );
+}
+
+/** Precedes the "Media" label, to match {@link GearIcon}. */
+export function MediaIcon(): JSX.Element {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true"
+         className="tab-tool-icon" fill="none" stroke="currentColor"
+         strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <line x1="7" y1="4" x2="7" y2="20" />
+      <line x1="17" y1="4" x2="17" y2="20" />
+      <line x1="2" y1="9" x2="7" y2="9" />
+      <line x1="2" y1="15" x2="7" y2="15" />
+      <line x1="17" y1="9" x2="22" y2="9" />
+      <line x1="17" y1="15" x2="22" y2="15" />
+    </svg>
+  );
+}
+
+const TOOL_ICONS: Record<string, () => JSX.Element> = {
+  events: EventLogIcon,
+  media: MediaIcon,
+  settings: GearIcon,
+};
+
 /** Unsaved edits in an open record: what differs from what was loaded. */
 function draftDirty(draft: { values: unknown; original: unknown } | null):
     boolean {
@@ -230,30 +269,37 @@ export function TitleStrip({ ctx, search, status, showProject = true }: {
             })}
           </TabScroller>
         )}
-        {showProject && (
+      </div>
+      {showProject && (
+        <div className="tab-add-slot">
           <button className="tab-add ghost" aria-label="Open another file"
                   title="Open another SCF file"
                   onClick={() => { ctx.openProject(); }}>
             +
           </button>
-        )}
-        {tools.map((id) => (
-          <div key={id} className={"tab tab-tool" +
-                                   (active === id ? " active" : "")}
-               role="tab" aria-selected={active === id}
-               onClick={() => useTabs.getState().openTool(id)}
-               onAuxClick={(e) => {
-                 if (e.button === 1) { e.preventDefault(); closeTool(id); }
-               }}>
-            {id === "settings" && <GearIcon />}
-            <span className="tab-title">{TOOL_TITLES[id]}</span>
-            <button className="tab-close ghost" aria-label={`Close ${
-                      TOOL_TITLES[id]}`}
-                    onClick={(e) => { e.stopPropagation(); closeTool(id); }}>
-              ×
-            </button>
-          </div>
-        ))}
+        </div>
+      )}
+      <div className="tab-list" role="tablist" aria-label="Open tools">
+        {tools.map((id) => {
+          const Icon = TOOL_ICONS[id];
+          return (
+            <div key={id} className={"tab tab-tool" +
+                                     (active === id ? " active" : "")}
+                 role="tab" aria-selected={active === id}
+                 onClick={() => useTabs.getState().openTool(id)}
+                 onAuxClick={(e) => {
+                   if (e.button === 1) { e.preventDefault(); closeTool(id); }
+                 }}>
+              {Icon !== undefined && <Icon />}
+              <span className="tab-title">{TOOL_TITLES[id]}</span>
+              <button className="tab-close ghost" aria-label={`Close ${
+                        TOOL_TITLES[id]}`}
+                      onClick={(e) => { e.stopPropagation(); closeTool(id); }}>
+                ×
+              </button>
+            </div>
+          );
+        })}
       </div>
       <div className="title-drag" data-tauri-drag-region />
       <div className="title-trailing">

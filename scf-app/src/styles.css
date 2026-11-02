@@ -265,7 +265,7 @@ ul { list-style: none; margin: 0; padding: 0; }
   gap: 7px;
   flex: 0 0 auto;
   max-width: 260px;
-  padding: 0 12px;
+  padding: 0 6px 0 12px;
   height: 31px;
   background: var(--ink-0);
   border: 1px solid var(--line);
@@ -282,12 +282,19 @@ ul { list-style: none; margin: 0; padding: 0; }
 .tab-problem .tab-state { color: var(--amber); }
 .tab-external .tab-state { color: var(--amber); }
 .tab-dirty .tab-state { color: var(--paper-dim); }
+.tab-add-slot {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  height: 31px;
+  display: flex;
+  align-items: center;
+  padding: 0 2px;
+  margin-bottom: -1px;
+}
 .tab-add {
   flex: 0 0 auto;
-  align-self: center;
   width: 24px;
   height: 24px;
-  margin: 0 4px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3473,7 +3480,7 @@ button.strip-span-label:hover { color: var(--amber); }
 .tab { cursor: default; }
 .tab:not(.active) { background: transparent; border-color: transparent; color: var(--paper-dim); }
 .tab:not(.active):hover { color: var(--paper); background: var(--ink-2); }
-.tab-close { padding: 0 5px; line-height: 1; font-size: 14px; }
+.tab-close { flex-shrink: 0; padding: 0; line-height: 1; font-size: 14px; }
 .tool-pane { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .tool-pane[hidden] { display: none; }
 
