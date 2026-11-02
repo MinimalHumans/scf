@@ -39,6 +39,22 @@ pub fn media_set_runtime_settings(
     queue.runtime().set_cache_limit_bytes(cache_limit_bytes);
 }
 
+/// The Media tab's "Project limit override" (spec §8's per-project cap,
+/// Phase 9) — `project_id` is the same asset-root string `media_
+/// register_asset` already uses as this project's identity. `limit_
+/// bytes: None` clears the override, falling back to the global figure.
+/// This map lives only in memory (`Queue::project_caps`) and starts
+/// empty every process start; the frontend (`objectUrlCache.ts`'s
+/// `pushProjectCacheLimitOverride`) re-pushes it from app.db's own
+/// `cache_limit_mb` column whenever a project's asset root is applied,
+/// since that's the one durable copy.
+#[tauri::command]
+pub fn media_set_project_cache_limit(
+    queue: tauri::State<'_, Queue>, project_id: String, limit_bytes: Option<u64>,
+) {
+    queue.set_project_cap_override(&project_id, limit_bytes);
+}
+
 #[tauri::command]
 pub fn media_server_info(info: tauri::State<'_, ServerInfo>) -> ServerInfo {
     info.inner().clone()
@@ -103,15 +119,26 @@ pub fn media_cache_stats(
     let stats = queue.cache().stats();
     let usage = |kinds: &[&str]| project_id.as_deref()
         .map(|p| queue.cache().project_usage_bytes(p, kinds));
+    // `cap_bytes` is what this project's usage is actually measured
+    // against: its own override if the Media tab set one, the global
+    // figure otherwise — matching `enforce_quota`'s own choice in
+    // `serve.rs` (`video_cap_bytes_for`/`still_cap_bytes_for`) so the
+    // dashboard's bar never shows a number enforcement doesn't agree
+    // with. With no `project_id`, there's nothing to override against,
+    // so this is just the global figure.
+    let video_cap = project_id.as_deref()
+        .map_or_else(|| queue.runtime().video_cap_bytes(), |p| queue.video_cap_bytes_for(p));
+    let still_cap = project_id.as_deref()
+        .map_or_else(|| queue.runtime().still_cap_bytes(), |p| queue.still_cap_bytes_for(p));
     CacheStatsDto {
         video: KindCacheStats {
             count: stats.video.count, bytes: stats.video.bytes, hits: stats.video.hits,
-            cap_bytes: queue.runtime().video_cap_bytes(),
+            cap_bytes: video_cap,
             project_usage_bytes: usage(&media_core::VIDEO_KINDS),
         },
         stills: KindCacheStats {
             count: stats.stills.count, bytes: stats.stills.bytes, hits: stats.stills.hits,
-            cap_bytes: queue.runtime().still_cap_bytes(),
+            cap_bytes: still_cap,
             project_usage_bytes: usage(&media_core::STILL_KINDS),
         },
     }

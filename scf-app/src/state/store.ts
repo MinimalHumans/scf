@@ -33,7 +33,7 @@ import { type ChangeUndo } from "@scf-core/ops/undoChange.ts";
 import { resolveAllAssets, type ResolutionReport }
   from "@scf-core/assets.ts";
 import { makeLocator } from "../files/assetLocator.ts";
-import { revokeAll } from "../files/objectUrlCache.ts";
+import { pushProjectCacheLimitOverride, revokeAll } from "../files/objectUrlCache.ts";
 import { clearResolutions } from "../files/thumbnailCache.ts";
 import { setAssetLocator } from "../ui/queries/runners.ts";
 import { useProjectTabs, type ProjectMemory } from "./projectTabs.ts";
@@ -383,6 +383,11 @@ async function applyAssetRoot(
   const exists = await invoke<boolean>("fs_exists", { path: assetRoot });
   set({ assetRoot, assetRootStatus: exists ? "ok" : "missing",
         environmentRevision: get().environmentRevision + 1 });
+  // The media server's per-project cache limit override lives only in
+  // memory (media-server's `Queue::project_caps`) and starts empty
+  // every process start — this is what re-seeds it from app.db's own
+  // copy, every time a root is (re-)applied, not just once.
+  await pushProjectCacheLimitOverride(get().projectPath, assetRoot);
 }
 
 export interface ShootMemory {

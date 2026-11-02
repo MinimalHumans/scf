@@ -182,6 +182,17 @@ pub struct Queue {
     /// in-flight HTTP connection — see `lib.rs`'s `ctx.clone()`) sees a
     /// setting change the instant `RuntimeSettings::set_*` is called.
     runtime: RuntimeSettings,
+    /// The Media tab's per-project cache limit override (spec §8's
+    /// "Per-project max cache MB"): project id → total bytes, split the
+    /// same 80/20 way `RuntimeSettings` splits the global figure. A
+    /// project with no entry here just uses the global limit — this map
+    /// only ever *tightens* a project's effective cap, never raises it
+    /// past the global one (see `video_cap_bytes_for`/
+    /// `still_cap_bytes_for`). Pushed by the frontend (`objectUrlCache.
+    /// ts`'s `pushProjectCacheLimitOverride`) whenever a project's asset
+    /// root is applied, since this map starts empty every process start
+    /// and app.db's own copy is this crate's only record of it.
+    project_caps: Arc<Mutex<HashMap<String, u64>>>,
     /// Running jobs only — a cancel needs the actual OS process handle,
     /// which nothing in `Cache`'s SQLite rows can give it.
     running: Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>,
@@ -319,6 +330,7 @@ impl Queue {
             video_max: config.video_workers,
             still_max: config.still_workers,
             runtime,
+            project_caps: Arc::new(Mutex::new(HashMap::new())),
             running: Arc::new(Mutex::new(HashMap::new())),
             progress: Arc::new(Mutex::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -334,6 +346,33 @@ impl Queue {
     /// Settings > Media's live knobs — see [`RuntimeSettings`].
     pub fn runtime(&self) -> &RuntimeSettings {
         &self.runtime
+    }
+
+    /// Sets or clears (`total_bytes: None`) `project_id`'s cache limit
+    /// override — the Media tab's "Project limit override" field.
+    pub fn set_project_cap_override(&self, project_id: &str, total_bytes: Option<u64>) {
+        let mut caps = self.project_caps.lock().unwrap();
+        match total_bytes {
+            Some(bytes) => { caps.insert(project_id.to_string(), bytes); }
+            None => { caps.remove(project_id); }
+        }
+    }
+
+    /// `project_id`'s effective video-kind cache cap: its own override,
+    /// split 80/20 the same way the global figure is, or the global cap
+    /// when it has none. Used by `serve.rs`'s `enforce_quota` call in
+    /// place of `runtime().video_cap_bytes()` directly.
+    pub fn video_cap_bytes_for(&self, project_id: &str) -> u64 {
+        self.project_caps.lock().unwrap().get(project_id).copied()
+            .map(|total| media_core::split_cache_cap(total).0)
+            .unwrap_or_else(|| self.runtime.video_cap_bytes())
+    }
+
+    /// The still-kind counterpart to [`Queue::video_cap_bytes_for`].
+    pub fn still_cap_bytes_for(&self, project_id: &str) -> u64 {
+        self.project_caps.lock().unwrap().get(project_id).copied()
+            .map(|total| media_core::split_cache_cap(total).1)
+            .unwrap_or_else(|| self.runtime.still_cap_bytes())
     }
 
     pub fn progress_of(&self, job_id: &str) -> Option<f64> {
@@ -758,6 +797,23 @@ mod tests {
         let status = queue.worker_status();
         assert_eq!(status.video_max, 3);
         assert_eq!(status.still_max, 5);
+    }
+
+    #[tokio::test]
+    async fn a_project_cap_override_beats_the_global_figure() {
+        let (queue, _dir) = temp_queue("project-cap-override");
+        let global_video = queue.runtime().video_cap_bytes();
+        assert_eq!(queue.video_cap_bytes_for("p1"), global_video); // no override yet
+
+        queue.set_project_cap_override("p1", Some(100 * 1024 * 1024));
+        let overridden = queue.video_cap_bytes_for("p1");
+        assert_ne!(overridden, global_video);
+        assert!(overridden < global_video, "an override should tighten, not raise, the cap");
+        // A different project is unaffected.
+        assert_eq!(queue.video_cap_bytes_for("p2"), global_video);
+
+        queue.set_project_cap_override("p1", None);
+        assert_eq!(queue.video_cap_bytes_for("p1"), global_video); // cleared
     }
 
     #[test]

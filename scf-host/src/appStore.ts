@@ -46,6 +46,12 @@ export interface ProjectRow {
   assetRoot: string | null;
   /** ISO 8601, UTC. */
   lastOpened: string;
+  /** The Media tab's "Project limit override" (docs/media-server-spec.md
+   *  §8's per-project cap, finally given a settings surface) — `null`
+   *  means "use Settings > Media's global cache limit," same as every
+   *  other optional column here. Tightens the global limit for this
+   *  project only; it can never raise it past the global figure. */
+  cacheLimitMb: number | null;
 }
 
 export interface TouchProjectFields {
@@ -53,6 +59,7 @@ export interface TouchProjectFields {
   title?: string | null;
   baseName?: string | null;
   assetRoot?: string | null;
+  cacheLimitMb?: number | null;
 }
 
 export interface SuggestionInput {
@@ -84,6 +91,7 @@ export interface AppStore {
   touchProject(scfPath: string, fields?: TouchProjectFields): Promise<ProjectRow>;
   getProject(scfPath: string): Promise<ProjectRow | null>;
   setAssetRoot(scfPath: string, assetRoot: string | null): Promise<ProjectRow>;
+  setCacheLimitMb(scfPath: string, cacheLimitMb: number | null): Promise<ProjectRow>;
   forgetProject(scfPath: string): Promise<void>;
   /** Most recently opened first. */
   recentProjects(limit?: number): Promise<ProjectRow[]>;
@@ -116,7 +124,7 @@ export interface OpenAppStoreOptions {
   importLegacyRecentFiles?: () => Promise<readonly string[]>;
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 function pathKeyOf(scfPath: string, caseInsensitive: boolean): string {
   return caseInsensitive ? scfPath.toLowerCase() : scfPath;
@@ -124,6 +132,10 @@ function pathKeyOf(scfPath: string, caseInsensitive: boolean): string {
 
 function str(v: SqlValue | undefined): string | null {
   return v === null || v === undefined ? null : String(v);
+}
+
+function num(v: SqlValue | undefined): number | null {
+  return v === null || v === undefined ? null : Number(v);
 }
 
 function toProjectRow(row: Row): ProjectRow {
@@ -135,6 +147,7 @@ function toProjectRow(row: Row): ProjectRow {
     baseName: str(row["base_name"]),
     assetRoot: str(row["asset_root"]),
     lastOpened: String(row["last_opened"]),
+    cacheLimitMb: num(row["cache_limit_mb"]),
   };
 }
 
@@ -241,38 +254,49 @@ async function migrate(
   const version = Number(row?.["user_version"] ?? 0);
   if (version >= SCHEMA_VERSION) return;
 
-  await exec(`CREATE TABLE IF NOT EXISTS project (
-    path_key    TEXT PRIMARY KEY,
-    scf_path    TEXT NOT NULL,
-    uuid        TEXT,
-    title       TEXT,
-    base_name   TEXT,
-    asset_root  TEXT,
-    last_opened TEXT NOT NULL
-  )`);
-  await exec(
-    "CREATE INDEX IF NOT EXISTS project_uuid ON project (uuid)");
-  await exec(
-    "CREATE INDEX IF NOT EXISTS project_title ON project (title COLLATE NOCASE)");
-  await exec(`CREATE TABLE IF NOT EXISTS pref (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  )`);
+  if (version < 1) {
+    await exec(`CREATE TABLE IF NOT EXISTS project (
+      path_key    TEXT PRIMARY KEY,
+      scf_path    TEXT NOT NULL,
+      uuid        TEXT,
+      title       TEXT,
+      base_name   TEXT,
+      asset_root  TEXT,
+      last_opened TEXT NOT NULL
+    )`);
+    await exec(
+      "CREATE INDEX IF NOT EXISTS project_uuid ON project (uuid)");
+    await exec(
+      "CREATE INDEX IF NOT EXISTS project_title ON project (title COLLATE NOCASE)");
+    await exec(`CREATE TABLE IF NOT EXISTS pref (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )`);
 
-  if (importLegacyRecentFiles !== undefined) {
-    const paths = await importLegacyRecentFiles();
-    // Synthetic, strictly decreasing timestamps: recentProjects() orders
-    // by last_opened, and the import has no real history to give it.
-    const now = Date.now();
-    for (let i = 0; i < paths.length; i++) {
-      const scfPath = paths[i];
-      if (scfPath === undefined) continue;
-      await exec(
-        "INSERT OR IGNORE INTO project (path_key, scf_path, last_opened) " +
-        "VALUES (?, ?, ?)",
-        [pathKeyOf(scfPath, caseInsensitiveKeys), scfPath,
-         new Date(now - i).toISOString()]);
+    if (importLegacyRecentFiles !== undefined) {
+      const paths = await importLegacyRecentFiles();
+      // Synthetic, strictly decreasing timestamps: recentProjects() orders
+      // by last_opened, and the import has no real history to give it.
+      const now = Date.now();
+      for (let i = 0; i < paths.length; i++) {
+        const scfPath = paths[i];
+        if (scfPath === undefined) continue;
+        await exec(
+          "INSERT OR IGNORE INTO project (path_key, scf_path, last_opened) " +
+          "VALUES (?, ?, ?)",
+          [pathKeyOf(scfPath, caseInsensitiveKeys), scfPath,
+           new Date(now - i).toISOString()]);
+      }
     }
+  }
+
+  // Media tab's per-project cache limit override (spec §8's "Per-
+  // project max cache MB," finally surfaced). `ALTER TABLE` rather than
+  // folding into the `CREATE TABLE IF NOT EXISTS` above: that branch
+  // only runs for a database that has never been migrated at all, but
+  // every real `app.db` out there is already at version 1.
+  if (version < 2) {
+    await exec("ALTER TABLE project ADD COLUMN cache_limit_mb REAL");
   }
 
   // Not bound: PRAGMA does not take parameters, and this is a fixed
@@ -286,7 +310,7 @@ function createStore(db: AppDb, caseInsensitiveKeys: boolean): AppStore {
   const getProject: AppStore["getProject"] = async (scfPath) => {
     const rows = await db.exec(
       "SELECT path_key, scf_path, uuid, title, base_name, asset_root, " +
-      "last_opened FROM project WHERE path_key = ?",
+      "last_opened, cache_limit_mb FROM project WHERE path_key = ?",
       [keyOf(scfPath)]);
     return rows.length === 0 ? null : toProjectRow(rows[0]!);
   };
@@ -295,22 +319,22 @@ function createStore(db: AppDb, caseInsensitiveKeys: boolean): AppStore {
     const pathKey = keyOf(scfPath);
     const now = new Date().toISOString();
     const given = (
-      ["uuid", "title", "baseName", "assetRoot"] as const
+      ["uuid", "title", "baseName", "assetRoot", "cacheLimitMb"] as const
     ).filter((key) => fields[key] !== undefined);
     const column = { uuid: "uuid", title: "title", baseName: "base_name",
-                      assetRoot: "asset_root" } as const;
+                      assetRoot: "asset_root", cacheLimitMb: "cache_limit_mb" } as const;
     const setClauses = [
       "scf_path = excluded.scf_path", "last_opened = excluded.last_opened",
       ...given.map((key) => `${column[key]} = ?`),
     ];
     await db.exec(
       "INSERT INTO project " +
-      "(path_key, scf_path, last_opened, uuid, title, base_name, asset_root) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+      "(path_key, scf_path, last_opened, uuid, title, base_name, asset_root, cache_limit_mb) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
       `ON CONFLICT(path_key) DO UPDATE SET ${setClauses.join(", ")}`,
       [pathKey, scfPath, now,
        fields.uuid ?? null, fields.title ?? null, fields.baseName ?? null,
-       fields.assetRoot ?? null,
+       fields.assetRoot ?? null, fields.cacheLimitMb ?? null,
        ...given.map((key) => fields[key] ?? null)]);
     const row = await getProject(scfPath);
     if (row === null) throw new Error(`internal: lost project row for ${scfPath}`);
@@ -322,13 +346,14 @@ function createStore(db: AppDb, caseInsensitiveKeys: boolean): AppStore {
     touchProject,
     getProject,
     setAssetRoot: (scfPath, assetRoot) => touchProject(scfPath, { assetRoot }),
+    setCacheLimitMb: (scfPath, cacheLimitMb) => touchProject(scfPath, { cacheLimitMb }),
     forgetProject: async (scfPath) => {
       await db.exec("DELETE FROM project WHERE path_key = ?", [keyOf(scfPath)]);
     },
     recentProjects: async (limit = 20) => {
       const rows = await db.exec(
         "SELECT path_key, scf_path, uuid, title, base_name, asset_root, " +
-        "last_opened FROM project ORDER BY last_opened DESC LIMIT ?",
+        "last_opened, cache_limit_mb FROM project ORDER BY last_opened DESC LIMIT ?",
         [limit]);
       return rows.map(toProjectRow);
     },
@@ -336,7 +361,7 @@ function createStore(db: AppDb, caseInsensitiveKeys: boolean): AppStore {
     suggestionsFor: async (input, excludeScfPath) => {
       const excludeKey = keyOf(excludeScfPath);
       const columns = "path_key, scf_path, uuid, title, base_name, " +
-        "asset_root, last_opened";
+        "asset_root, last_opened, cache_limit_mb";
 
       const strongRows = input.uuid === null ? [] : await db.exec(
         `SELECT ${columns} FROM project ` +

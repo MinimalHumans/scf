@@ -44,10 +44,27 @@ describe("schema and migration", () => {
       expect(await second.getProject("/films/a.scf")).toEqual({
         pathKey: "/films/a.scf", scfPath: "/films/a.scf", uuid: "u1",
         title: "A Film", baseName: "a", assetRoot: "/films/assets",
-        lastOpened: expect.any(String),
+        lastOpened: expect.any(String), cacheLimitMb: null,
       });
     } finally {
       await second.close();
+    }
+  });
+
+  test("setCacheLimitMb persists the Media tab's per-project override", async () => {
+    const path = join(dir, "app.db");
+    const store = await openNodeAppStore(path);
+    try {
+      await store.touchProject("/films/a.scf", { assetRoot: "/films/assets" });
+      expect((await store.getProject("/films/a.scf"))?.cacheLimitMb).toBeNull();
+
+      await store.setCacheLimitMb("/films/a.scf", 512);
+      expect((await store.getProject("/films/a.scf"))?.cacheLimitMb).toBe(512);
+
+      await store.setCacheLimitMb("/films/a.scf", null);
+      expect((await store.getProject("/films/a.scf"))?.cacheLimitMb).toBeNull();
+    } finally {
+      await store.close();
     }
   });
 

@@ -49,6 +49,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { resolvedAbsolutePath } from "./assetLocator.ts";
+import { windowAppStore } from "../host/windowAppStore.ts";
 
 interface ServerInfo { url: string; token: string }
 
@@ -283,6 +284,35 @@ export async function retryJob(jobId: string): Promise<void> {
  */
 export async function flushCache(root: string | null): Promise<void> {
   await invoke("media_cache_flush", { projectId: root });
+}
+
+/**
+ * Re-pushes `scfPath`'s Media-tab cache limit override (app.db's
+ * `project.cache_limit_mb`, written by `scf-host`'s `setCacheLimitMb`)
+ * to the running media server, keyed by `assetRoot` — the same string
+ * `register` above already passes as `project_id` when registering a
+ * handle, and what `serve.rs`'s `enforce_quota` calls key the override
+ * map on. The map lives only in memory and starts empty every process
+ * start, so this needs to run again on every launch, not just once:
+ * `applyAssetRoot` (`state/store.ts`) calls it whenever a project's
+ * asset root is (re-)applied. Best-effort — a failure here leaves
+ * enforcement on the global limit, which is always a safe fallback,
+ * never a broken one.
+ */
+export async function pushProjectCacheLimitOverride(
+    scfPath: string | null, assetRoot: string): Promise<void> {
+  if (scfPath === null) return;
+  try {
+    const store = await windowAppStore();
+    const row = await store.getProject(scfPath);
+    const mb = row?.cacheLimitMb ?? null;
+    await invoke("media_set_project_cache_limit", {
+      projectId: assetRoot,
+      limitBytes: mb === null ? null : Math.round(mb * 1024 * 1024),
+    });
+  } catch (e) {
+    console.error("project cache limit override push failed:", e);
+  }
 }
 
 /**

@@ -366,7 +366,7 @@ fn serve_media(
             // so a hit on the entry itself never reads as its own LRU
             // candidate.
             for pid in project_ids {
-                ctx.queue.cache().enforce_quota(pid, &media_core::VIDEO_KINDS, ctx.queue.runtime().video_cap_bytes());
+                ctx.queue.cache().enforce_quota(pid, &media_core::VIDEO_KINDS, ctx.queue.video_cap_bytes_for(pid));
             }
             response
         }
@@ -449,7 +449,7 @@ fn serve_still_media(
     };
 
     for pid in project_ids {
-        ctx.queue.cache().enforce_quota(pid, &media_core::STILL_KINDS, ctx.queue.runtime().still_cap_bytes());
+        ctx.queue.cache().enforce_quota(pid, &media_core::STILL_KINDS, ctx.queue.still_cap_bytes_for(pid));
     }
     response
 }
