@@ -66,6 +66,8 @@ const DECODED: Record<string, string> = {
   ari: "ARRIRAW needs its own decoder",
   aif: "AIFF is inconsistently supported; treat it as undecodable",
   aiff: "AIFF is inconsistently supported; treat it as undecodable",
+  heic: "HEIC needs a decoder the browser does not have",
+  heif: "HEIC needs a decoder the browser does not have",
 };
 
 /** Nothing to depict — not a failure, just not an image of anything. */
@@ -105,6 +107,16 @@ export const PROBEABLE = [
   "mov", "mxf", "mkv", "avi", "wmv", "m4v", "mts", "r3d", "ari",
   "aif", "aiff",
 ];
+
+/**
+ * `decoded`-tier still formats Phase 5's pipeline (`oiiotool`/
+ * `magick`) might actually be able to show, via `/meta`'s verdict —
+ * the still-image counterpart to `PROBEABLE` above, read by
+ * `AssetPreview.tsx`/`AssetFileFacts.tsx`. Not a tier change itself:
+ * a format on this list with no backend configured still falls back
+ * to the same static `DECODED` sentence as before.
+ */
+export const STILL_BACKEND = ["exr", "dpx", "tif", "tiff", "psd", "heic", "heif"];
 
 /**
  * What can be done with these bytes, from the identifier alone.

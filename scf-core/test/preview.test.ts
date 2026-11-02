@@ -10,7 +10,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { listAssets } from "../src/assetIndex.ts";
-import { PROBEABLE, previewCapability } from "../src/preview.ts";
+import { PROBEABLE, STILL_BACKEND, previewCapability } from "../src/preview.ts";
 import { openNodeDatabase, type NodeDatabase } from "../src/node.ts";
 import { FIXTURE_PATH } from "./setup.ts";
 
@@ -40,6 +40,15 @@ describe("previewCapability", () => {
       expect(previewCapability(ext).tier, ext).toBe("decoded");
       expect(previewCapability(ext).detail, ext).not.toBeNull();
     }
+  });
+
+  test("HEIC is decoded, not a generic unknown format", () => {
+    // Phase 5's magick-backed still pipeline can actually show this —
+    // it must stay distinct from the generic "unknown format" message
+    // an unrecognized extension gets.
+    expect(previewCapability("heic")).toMatchObject({ tier: "decoded" });
+    expect(previewCapability("heic").detail).toContain("HEIC");
+    expect(previewCapability("heif").detail).toContain("HEIC");
   });
 
   test("archives and model weights are named", () => {
@@ -83,6 +92,22 @@ describe("PROBEABLE", () => {
     expect(PROBEABLE).not.toContain("exr");
     expect(PROBEABLE).not.toContain("psd");
     expect(PROBEABLE).not.toContain("tiff");
+  });
+});
+
+describe("STILL_BACKEND", () => {
+  test("lists exactly the decoded-tier formats Phase 5's pipeline covers",
+    () => {
+    for (const ext of ["exr", "dpx", "tif", "tiff", "psd", "heic", "heif"]) {
+      expect(STILL_BACKEND, ext).toContain(ext);
+      expect(previewCapability(ext).tier, ext).toBe("decoded");
+    }
+  });
+
+  test("never overlaps PROBEABLE — the two pipelines are disjoint", () => {
+    for (const ext of STILL_BACKEND) {
+      expect(PROBEABLE).not.toContain(ext);
+    }
   });
 });
 

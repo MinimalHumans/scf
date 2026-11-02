@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! media-core — backend discovery/validation (Phase 1), probing and
-//! verdicts (Phase 3), and the conversion cache plus ffmpeg remux/
-//! transcode (Phase 4) for the media server (docs/media-server-spec.md
+//! verdicts (Phase 3), the conversion cache plus ffmpeg remux/
+//! transcode (Phase 4), and the still-image pipeline via oiiotool/
+//! magick (Phase 5) for the media server (docs/media-server-spec.md
 //! §2, §3, §5, §7).
 //!
 //! No Tauri or webview dependency, deliberately: this is the seam a
@@ -18,6 +19,8 @@ mod capabilities;
 mod convert;
 mod discover;
 mod probe;
+mod still_convert;
+mod still_probe;
 mod validate;
 mod verdict;
 
@@ -28,12 +31,17 @@ use std::path::PathBuf;
 pub use backends::Backends;
 pub use cache::{
     cache_key, delete_orphaned_parts, source_signature, Cache, DerivedParams, EntryInfo,
-    JobInfo, JobState, SourceSignature, PROFILE_VERSION,
+    JobInfo, JobState, SourceSignature, StillDerivedParams, PROFILE_VERSION,
 };
 pub use capabilities::Capabilities;
 pub use convert::{spawn_remux, spawn_transcode, wait_with_progress, Spawned};
 pub use probe::{probe, ProbeCache, ProbeResult};
-pub use verdict::{classify, Verdict};
+pub use still_convert::{spawn_still_render, wait_still, StillRenderArgs};
+pub use still_probe::{
+    probe_magick, probe_oiiotool, resolve_still_selection, StillProbeCache, StillProbeResult,
+    StillSelection,
+};
+pub use verdict::{classify, classify_still, Verdict};
 
 /// The four backends the spec names (§3). `ALL` is the detection order
 /// shown in Settings, not a priority order for dispatch — there is no

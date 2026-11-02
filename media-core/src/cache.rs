@@ -84,12 +84,18 @@ pub fn source_signature(path: &Path) -> std::io::Result<SourceSignature> {
 
 /// The output profile knobs that change what a conversion produces —
 /// part of the cache key so changing a setting never serves a stale
-/// result under the same name. Not user-configurable yet (the plan's
-/// decision 7); the fields exist so the key is already shaped right
-/// for when they are.
+/// result under the same name. `resolution_cap`/`crf` are video's (not
+/// user-configurable yet, the plan's decision 7); `layer`/`channel`
+/// are Phase 5's still-image addition (§7 "Key": "derived_params...
+/// layer, channel") — both `None` for video and for a still with no
+/// layer structure, so existing cache keys for those cases are
+/// unaffected in shape, only in the extra (empty) bytes hashed.
+#[derive(Default)]
 pub struct DerivedParams {
     pub resolution_cap: u32,
     pub crf: u32,
+    pub layer: Option<String>,
+    pub channel: Option<String>,
 }
 
 /// `hash(source_signature, backend_id, backend_version, profile_version,
@@ -113,7 +119,23 @@ pub fn cache_key(
     hasher.write(&profile_version.to_le_bytes());
     hasher.write(&params.resolution_cap.to_le_bytes());
     hasher.write(&params.crf.to_le_bytes());
+    hasher.write(params.layer.as_deref().unwrap_or("").as_bytes());
+    hasher.write(params.channel.as_deref().unwrap_or("").as_bytes());
     format!("{:016x}", hasher.finish())
+}
+
+/// The still output profile's own knobs (spec §7) — separate from
+/// [`DerivedParams`] because video's resolution cap/CRF and stills'
+/// max long edge are unrelated settings; conflating them would make
+/// the video path carry meaningless still fields and vice versa.
+pub struct StillDerivedParams {
+    pub max_long_edge: u32,
+}
+
+impl Default for StillDerivedParams {
+    fn default() -> Self {
+        StillDerivedParams { max_long_edge: 2048 }
+    }
 }
 
 fn new_id() -> String {
@@ -243,9 +265,11 @@ impl Cache {
 
     /// Where a finished conversion lives on disk, named by its cache
     /// key so two jobs that land on the same key (a dedup race) agree
-    /// on the final path without coordinating.
-    pub fn entry_path(&self, key: &str) -> PathBuf {
-        self.dir.join("entries").join(format!("{key}.mp4"))
+    /// on the final path without coordinating. `ext` is the caller's
+    /// (not derived here) — `"mp4"` for Remux/Transcode, `"jpg"` for
+    /// Phase 5's Render.
+    pub fn entry_path(&self, key: &str, ext: &str) -> PathBuf {
+        self.dir.join("entries").join(format!("{key}.{ext}"))
     }
 
     pub fn get_entry(&self, key: &str) -> Option<EntryInfo> {
@@ -435,7 +459,7 @@ mod tests {
     #[test]
     fn cache_key_is_stable_for_the_same_inputs() {
         let sig = SourceSignature { size: 100, mtime: 1000, edge_hash: 42 };
-        let params = DerivedParams { resolution_cap: 1080, crf: 23 };
+        let params = DerivedParams { resolution_cap: 1080, crf: 23, ..Default::default() };
         let a = cache_key(sig, "ffmpeg", "6.1", PROFILE_VERSION, &params);
         let b = cache_key(sig, "ffmpeg", "6.1", PROFILE_VERSION, &params);
         assert_eq!(a, b);
@@ -444,16 +468,16 @@ mod tests {
     #[test]
     fn cache_key_changes_with_profile_version_or_params() {
         let sig = SourceSignature { size: 100, mtime: 1000, edge_hash: 42 };
-        let params = DerivedParams { resolution_cap: 1080, crf: 23 };
+        let params = DerivedParams { resolution_cap: 1080, crf: 23, ..Default::default() };
         let base = cache_key(sig, "ffmpeg", "6.1", 1, &params);
         assert_ne!(base, cache_key(sig, "ffmpeg", "6.1", 2, &params));
-        let other_params = DerivedParams { resolution_cap: 720, crf: 23 };
+        let other_params = DerivedParams { resolution_cap: 720, crf: 23, ..Default::default() };
         assert_ne!(base, cache_key(sig, "ffmpeg", "6.1", 1, &other_params));
     }
 
     #[test]
     fn cache_key_changes_when_the_source_signature_changes() {
-        let params = DerivedParams { resolution_cap: 1080, crf: 23 };
+        let params = DerivedParams { resolution_cap: 1080, crf: 23, ..Default::default() };
         let a = cache_key(
             SourceSignature { size: 100, mtime: 1000, edge_hash: 42 },
             "ffmpeg", "6.1", PROFILE_VERSION, &params);

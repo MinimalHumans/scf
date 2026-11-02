@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn transcode_bakes_in_the_resolution_cap_and_crf() {
-        let params = DerivedParams { resolution_cap: 720, crf: 28 };
+        let params = DerivedParams { resolution_cap: 720, crf: 28, ..Default::default() };
         let args = transcode_args(Path::new("in.mp4"), Path::new("out.part"), &params);
         assert!(args.iter().any(|a| a.contains("min(720,iw)")));
         assert!(args.contains(&"28".to_string()));

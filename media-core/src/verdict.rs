@@ -9,6 +9,7 @@
 
 use crate::capabilities::Capabilities;
 use crate::probe::ProbeResult;
+use crate::still_probe::StillProbeResult;
 use crate::Backends;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -21,8 +22,13 @@ pub enum Verdict {
     Remux,
     /// The codec itself isn't decodable. Needs `ffmpeg` to actually do.
     Transcode,
-    /// `Remux`/`Transcode` would be the answer, but no backend exists
-    /// to do it — the honest "nothing can help with this yet."
+    /// A still image the browser can't decode, but a backend
+    /// (oiiotool/magick) can flatten to a displayable PNG/JPEG (Phase
+    /// 5). Never returned by [`classify`] — only by [`classify_still`].
+    Render,
+    /// `Remux`/`Transcode`/`Render` would be the answer, but no
+    /// backend exists to do it — the honest "nothing can help with
+    /// this yet."
     Unsupported,
 }
 
@@ -65,6 +71,18 @@ pub fn classify(probe: &ProbeResult, caps: &Capabilities, backends: &Backends) -
     } else {
         needed
     }
+}
+
+/// Stills have no browser-decodability question to ask (no webview
+/// engine ever natively decodes EXR/TIFF/PSD, so there's nothing like
+/// `Capabilities`' codec table to consult) — the only gate is whether
+/// a backend was found at all. `probe` is unused beyond proving a
+/// caller actually has one in hand; it exists so this function reads
+/// the same shape as [`classify`] and so a future per-format rule
+/// (e.g. a format a backend reports but can't actually flatten) has
+/// somewhere natural to go without changing every call site.
+pub fn classify_still(_probe: &StillProbeResult, backend_present: bool) -> Verdict {
+    if backend_present { Verdict::Render } else { Verdict::Unsupported }
 }
 
 #[cfg(test)]
@@ -145,5 +163,17 @@ mod tests {
         caps.report(std::collections::HashMap::from([("h264/mp4".to_string(), false)]));
         let v = classify(&probe("h264", "mp4"), &caps, &with_ffmpeg());
         assert_eq!(v, Verdict::Transcode);
+    }
+
+    #[test]
+    fn an_exr_with_a_backend_present_is_render() {
+        let v = classify_still(&StillProbeResult::default(), true);
+        assert_eq!(v, Verdict::Render);
+    }
+
+    #[test]
+    fn an_exr_with_no_backend_is_unsupported() {
+        let v = classify_still(&StillProbeResult::default(), false);
+        assert_eq!(v, Verdict::Unsupported);
     }
 }

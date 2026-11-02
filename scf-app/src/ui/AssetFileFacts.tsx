@@ -29,7 +29,7 @@ import {
   HEADER_BYTES, readHeaderMetadata, type FileMetadata,
 } from "@scf-core/fileMetadata.ts";
 import { formatOf, parseIdentifier } from "@scf-core/assets.ts";
-import { PROBEABLE } from "@scf-core/preview.ts";
+import { PROBEABLE, STILL_BACKEND } from "@scf-core/preview.ts";
 import { readAssetBytes } from "../files/assetLocator.ts";
 import {
   acquire, acquireMeta, cancelJob, jobStatus, startConversion,
@@ -68,12 +68,16 @@ function humanDuration(totalSeconds: number): string {
 /** `remux`/`transcode` get the "Convert for preview" action below
  *  instead (Phase 4) — both verdicts only ever come back when ffmpeg
  *  is configured (`media-core`'s `classify()`), so the button always
- *  has something that can actually do the work. `unsupported` still
- *  gets a plain sentence: nothing here can help with it either way. */
+ *  has something that can actually do the work. `render` (Phase 5)
+ *  needs nothing here either — `AssetPreview.tsx` already requests it
+ *  automatically, so there's nothing left for this panel to add.
+ *  `unsupported` still gets a plain sentence: nothing here can help
+ *  with it either way. */
 const VERDICT_NOTE: Record<AssetMeta["verdict"], string | null> = {
   passthrough: null,
   remux: null,
   transcode: null,
+  render: null,
   unsupported: "the browser can't decode this, and nothing here can " +
                "convert it either",
 };
@@ -118,7 +122,8 @@ export function AssetFileFacts({ identifier }: {
     let cancelled = false;
     setProbed(null);
     if (parsed === null || root === null || parsed.root !== "project") return;
-    if (!PROBEABLE.includes(formatOf(identifier ?? "") ?? "")) return;
+    const fmt = formatOf(identifier ?? "") ?? "";
+    if (!PROBEABLE.includes(fmt) && !STILL_BACKEND.includes(fmt)) return;
 
     void (async () => {
       await reportMediaCapabilities();

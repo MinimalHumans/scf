@@ -33,6 +33,12 @@
  * a conversion is needed, so `startConversion` is the one true way to
  * find out — there is no separate "does this need converting" check to
  * get out of sync with the real answer.
+ *
+ * Phase 5 adds `requestStillRender`, the still-image analogue: same
+ * `/media` request, plus `layer`/`channel` query params for an EXR's
+ * layer picker, and a ready result carries its own url directly since
+ * an `<img>` (unlike `<video>`) has nothing to reload once the job
+ * finishes — the caller just swaps `src`.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -123,7 +129,13 @@ export interface AssetMeta {
     durationSecs: number | null;
     fps: number | null;
   };
-  verdict: "passthrough" | "remux" | "transcode" | "unsupported";
+  verdict: "passthrough" | "remux" | "transcode" | "render" | "unsupported";
+  /** EXR's layer/channel names (Phase 5) — always `[]` for a video/
+   *  audio asset, for a magick-backed still format (no introspection),
+   *  or for an EXR with no layer structure. The frontend builds its
+   *  layer picker from these, never by guessing. */
+  layers: string[];
+  channels: string[];
 }
 
 /**
@@ -178,6 +190,45 @@ export async function startConversion(
     return body.jobId;
   } catch {
     return null;
+  }
+}
+
+export type StillRenderResult =
+  | { kind: "ready"; url: string }
+  | { kind: "queued"; jobId: string }
+  | { kind: "unsupported" }
+  | { kind: "error"; message: string };
+
+/**
+ * The still-image counterpart to `startConversion` (Phase 5): asks
+ * `/media` with the chosen `layer`/`channel` (both ignored server-side
+ * for a non-EXR format — see `resolve_still_selection`), but — unlike
+ * video's "fire and poll a separate `<video>` reload" — a `200`/`206`
+ * here means the url is immediately usable as an `<img src>`, so the
+ * ready case returns that same url rather than leaving the caller to
+ * build it again.
+ */
+export async function requestStillRender(
+  root: string | null, path: string, layer: string, channel: string,
+): Promise<StillRenderResult> {
+  const r = await acquireEntry(root, path);
+  if (r === null) return { kind: "error", message: "could not resolve this asset" };
+  const params = new URLSearchParams({ h: r.handle, t: r.info.token });
+  if (layer !== "") params.set("layer", layer);
+  if (channel !== "") params.set("channel", channel);
+  const url = `${r.info.url}/media?${params.toString()}`;
+  try {
+    const res = await fetch(url);
+    if (res.status === 200 || res.status === 206) return { kind: "ready", url };
+    if (res.status === 202) {
+      const body = await res.json() as { jobId: string };
+      return { kind: "queued", jobId: body.jobId };
+    }
+    if (res.status === 415) return { kind: "unsupported" };
+    const body = await res.json().catch(() => null) as { error?: string } | null;
+    return { kind: "error", message: body?.error ?? `unexpected ${String(res.status)}` };
+  } catch (e) {
+    return { kind: "error", message: e instanceof Error ? e.message : String(e) };
   }
 }
 

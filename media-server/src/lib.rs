@@ -9,8 +9,9 @@
 //! branching on a probe+verdict for anything ffprobe can read: a
 //! cache hit is served, a miss is queued and answered `202` (Phase 4).
 //! `/meta` adds ffprobe-based technical facts and the same verdict,
-//! informationally, for `AssetFileFacts` (Phase 3). Still images are
-//! out of scope throughout — Phase 5.
+//! informationally, for `AssetFileFacts` (Phase 3). Still images
+//! (EXR/TIFF/PSD/HEIC/DPX) get the same cache/queue treatment via
+//! oiiotool/magick instead of ffmpeg (Phase 5).
 
 mod handles;
 mod queue;
@@ -64,6 +65,7 @@ pub fn start(
     let handles = Handles::default();
     let capabilities = media_core::Capabilities::default();
     let probe_cache = media_core::ProbeCache::default();
+    let still_probe_cache = media_core::StillProbeCache::default();
     let cache = media_core::Cache::open(cache_dir.join("media"))
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let queue = Queue::new(cache);
@@ -71,7 +73,7 @@ pub fn start(
     let info = ServerInfo { url: format!("http://127.0.0.1:{port}"), token: token.clone() };
     let ctx = serve::Context {
         port, token, handles: handles.clone(), backends,
-        capabilities: capabilities.clone(), probe_cache, queue,
+        capabilities: capabilities.clone(), probe_cache, still_probe_cache, queue,
     };
 
     let accept = async move {

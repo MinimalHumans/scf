@@ -1,41 +1,67 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The background conversion queue (docs/media-server-spec.md §6):
 //! dedup, a concurrency cap, and cancel. `media-core`'s `Cache` and
-//! `convert` functions are plain synchronous code (no tokio
-//! dependency there — see the plan); this is the async layer that
-//! runs them concurrently, bounded, and cancellably, the same way
-//! `scf-app/src-tauri/src/media.rs` already wraps `media_core::
+//! `convert`/`still_convert` functions are plain synchronous code (no
+//! tokio dependency there — see the plan); this is the async layer
+//! that runs them concurrently, bounded, and cancellably, the same
+//! way `scf-app/src-tauri/src/media.rs` already wraps `media_core::
 //! detect_all` in a blocking task.
 
 use std::collections::HashMap;
 use std::process::Child;
 use std::sync::{Arc, Mutex};
 
-use media_core::{Cache, DerivedParams, JobState, Verdict};
+use media_core::{Cache, DerivedParams, JobState, StillDerivedParams, StillSelection, Verdict};
 use tokio::sync::Semaphore;
 
-/// Not user-configurable yet (the plan's decision 7) — "default 1
-/// video job" from spec §6, and there is no still pipeline yet to
-/// need a separate cap.
-const MAX_CONCURRENT_JOBS: usize = 1;
+/// Not user-configurable yet (the plan's decision 7) — spec §6's
+/// "default 1 video job".
+const MAX_VIDEO_JOBS: usize = 1;
+
+/// Spec §6: "default... 2 still jobs" — Phase 4 deferred this ("no
+/// still pipeline yet to need a separate cap"); Phase 5 is that
+/// pipeline, so this is the first phase that actually needs it.
+const MAX_STILL_JOBS: usize = 2;
 
 /// Not user-configurable yet (the plan's decision 7) — shared with
 /// `serve.rs`, which needs the same values to compute a cache-key
 /// lookup for the `/media` route that this module uses to actually run
 /// the conversion.
-pub(crate) const DERIVED_PARAMS: DerivedParams = DerivedParams { resolution_cap: 1080, crf: 23 };
+pub(crate) const DERIVED_PARAMS: DerivedParams =
+    DerivedParams { resolution_cap: 1080, crf: 23, layer: None, channel: None };
+
+/// Phase 5's still output profile (spec §7) — shared with `serve.rs`
+/// for the same reason `DERIVED_PARAMS` is.
+pub(crate) const STILL_DERIVED_PARAMS: StillDerivedParams = StillDerivedParams { max_long_edge: 2048 };
 
 #[derive(Clone)]
 pub struct Queue {
     cache: Cache,
-    semaphore: Arc<Semaphore>,
+    /// Separate pools (spec §6: "1 video job + 2 still jobs") — a
+    /// burst of still-render requests must not starve, or be starved
+    /// by, a single running video conversion.
+    video_semaphore: Arc<Semaphore>,
+    still_semaphore: Arc<Semaphore>,
     /// Running jobs only — a cancel needs the actual OS process handle,
     /// which nothing in `Cache`'s SQLite rows can give it.
     running: Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>,
     /// Live 0.0-1.0 progress, separate from `Cache`'s durable state —
     /// this changes many times a second while a job runs and has no
-    /// business being a SQLite write each time.
+    /// business being a SQLite write each time. A still render never
+    /// populates this (no progress to report — see `run_conversion`);
+    /// its absence here is the honest "nothing yet" the frontend
+    /// already treats a missing entry as.
     progress: Arc<Mutex<HashMap<String, f64>>>,
+}
+
+/// Only present for a [`Verdict::Render`] request — the selection
+/// already resolved against a probe result (see `media_core::
+/// resolve_still_selection`) and the source's own dimensions, needed
+/// to decide whether `still_convert`'s resize cap applies.
+pub struct StillRenderRequest {
+    pub selection: StillSelection,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 pub struct EnqueueRequest<'a> {
@@ -43,8 +69,25 @@ pub struct EnqueueRequest<'a> {
     pub priority: &'a str,
     pub input: &'a std::path::Path,
     pub verdict: Verdict,
-    pub ffmpeg: &'a std::path::Path,
+    /// `"ffmpeg"` for Remux/Transcode; `"oiiotool"`/`"magick"` for
+    /// Render — which arg-builder `run_conversion` dispatches to.
+    pub backend_id: &'a str,
+    pub backend: &'a std::path::Path,
     pub duration_secs: Option<f64>,
+    /// `Some` only for `Verdict::Render`.
+    pub still: Option<StillRenderRequest>,
+}
+
+fn output_ext(verdict: Verdict) -> &'static str {
+    if verdict == Verdict::Render { "jpg" } else { "mp4" }
+}
+
+fn kind_str(verdict: Verdict) -> &'static str {
+    match verdict {
+        Verdict::Remux => "remux",
+        Verdict::Render => "render",
+        _ => "transcode",
+    }
 }
 
 impl Queue {
@@ -56,7 +99,8 @@ impl Queue {
         media_core::delete_orphaned_parts(cache.dir());
         Queue {
             cache,
-            semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_JOBS)),
+            video_semaphore: Arc::new(Semaphore::new(MAX_VIDEO_JOBS)),
+            still_semaphore: Arc::new(Semaphore::new(MAX_STILL_JOBS)),
             running: Arc::new(Mutex::new(HashMap::new())),
             progress: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -87,11 +131,18 @@ impl Queue {
         let key = req.key.to_string();
         let input = req.input.to_path_buf();
         let verdict = req.verdict;
-        let ffmpeg = req.ffmpeg.to_path_buf();
+        let backend_id = req.backend_id.to_string();
+        let backend = req.backend.to_path_buf();
         let duration_secs = req.duration_secs;
+        let still = req.still;
+        let semaphore = if verdict == Verdict::Render {
+            queue.still_semaphore.clone()
+        } else {
+            queue.video_semaphore.clone()
+        };
 
         tokio::spawn(async move {
-            let permit = queue.semaphore.clone().acquire_owned().await;
+            let permit = semaphore.acquire_owned().await;
             let Ok(_permit) = permit else { return }; // semaphore closed: shutting down
 
             // Cancelled while queued, before its turn came up.
@@ -103,7 +154,10 @@ impl Queue {
             let id_for_run = id.clone();
             let queue_for_run = queue.clone();
             let result = tokio::task::spawn_blocking(move || {
-                run_conversion(&queue_for_run, &id_for_run, &ffmpeg, &input, verdict, duration_secs)
+                run_conversion(&queue_for_run, &id_for_run, ConversionJob {
+                    backend_id: &backend_id, backend: &backend, input: &input,
+                    verdict, duration_secs, still,
+                })
             })
             .await;
 
@@ -112,10 +166,9 @@ impl Queue {
 
             match result {
                 Ok(Ok(())) => {
-                    let path = queue.cache.entry_path(&key);
+                    let path = queue.cache.entry_path(&key, output_ext(verdict));
                     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                    let kind = if verdict == Verdict::Remux { "remux" } else { "transcode" };
-                    queue.cache.put_entry(&key, &path.display().to_string(), bytes, kind);
+                    queue.cache.put_entry(&key, &path.display().to_string(), bytes, kind_str(verdict));
                     queue.cache.set_job_done(&id);
                 }
                 Ok(Err(e)) => {
@@ -152,33 +205,54 @@ impl Queue {
     }
 }
 
-/// The actual blocking work: spawn ffmpeg, track it for cancel, read
-/// its progress, fsync and rename on success. Runs inside
-/// `spawn_blocking` — ordinary synchronous code, same style as
+/// What [`run_conversion`] needs — bundled so the call doesn't carry
+/// eight loose arguments (`queue`/`job_id` stay separate: they name
+/// *where* this runs, not *what* to run).
+struct ConversionJob<'a> {
+    backend_id: &'a str,
+    backend: &'a std::path::Path,
+    input: &'a std::path::Path,
+    verdict: Verdict,
+    duration_secs: Option<f64>,
+    still: Option<StillRenderRequest>,
+}
+
+/// The actual blocking work: spawn the right backend, track it for
+/// cancel, read progress (video only — spec §6: "oiiotool/magick
+/// report start/finish only"), fsync and rename on success. Runs
+/// inside `spawn_blocking` — ordinary synchronous code, same style as
 /// `media_core::probe`.
-fn run_conversion(
-    queue: &Queue, job_id: &str, ffmpeg: &std::path::Path, input: &std::path::Path,
-    verdict: Verdict, duration_secs: Option<f64>,
-) -> Result<(), String> {
+fn run_conversion(queue: &Queue, job_id: &str, job: ConversionJob<'_>) -> Result<(), String> {
     let tmp = queue.cache.tmp_path(job_id);
     if let Some(dir) = tmp.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
 
-    let spawned = if verdict == Verdict::Remux {
-        media_core::spawn_remux(ffmpeg, input, &tmp)
+    if job.verdict == Verdict::Render {
+        let still = job.still.ok_or_else(|| "a render job with no still request".to_string())?;
+        let child = media_core::spawn_still_render(media_core::StillRenderArgs {
+            backend_id: job.backend_id, backend_path: job.backend, input: job.input, out_tmp: &tmp,
+            selection: &still.selection, width: still.width, height: still.height,
+            max_long_edge: STILL_DERIVED_PARAMS.max_long_edge,
+        }).map_err(|e| e.to_string())?;
+        queue.running.lock().unwrap().insert(job_id.to_string(), child.clone());
+        media_core::wait_still(child)?;
     } else {
-        media_core::spawn_transcode(ffmpeg, input, &tmp, &DERIVED_PARAMS)
+        let spawned = if job.verdict == Verdict::Remux {
+            media_core::spawn_remux(job.backend, job.input, &tmp)
+        } else {
+            media_core::spawn_transcode(job.backend, job.input, &tmp, &DERIVED_PARAMS)
+        }
+        .map_err(|e| e.to_string())?;
+
+        queue.running.lock().unwrap().insert(job_id.to_string(), spawned.child.clone());
+
+        let job_id_for_progress = job_id.to_string();
+        let progress = queue.progress.clone();
+        media_core::wait_with_progress(spawned, job.duration_secs, move |p| {
+            progress.lock().unwrap().insert(job_id_for_progress.clone(), p);
+        })?;
     }
-    .map_err(|e| e.to_string())?;
-
-    queue.running.lock().unwrap().insert(job_id.to_string(), spawned.child.clone());
-
-    let job_id_for_progress = job_id.to_string();
-    let progress = queue.progress.clone();
-    media_core::wait_with_progress(spawned, duration_secs, move |p| {
-        progress.lock().unwrap().insert(job_id_for_progress.clone(), p);
-    })?;
 
     // A cancel may have killed the process and deleted `.part` just as
     // it was finishing successfully — check the output is still there
@@ -196,7 +270,7 @@ fn run_conversion(
     drop(file);
 
     let key = queue.cache.get_job(job_id).map(|j| j.key).unwrap_or_default();
-    let final_path = queue.cache.entry_path(&key);
+    let final_path = queue.cache.entry_path(&key, output_ext(job.verdict));
     if let Some(dir) = final_path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -235,8 +309,10 @@ mod tests {
             key, priority: "requested",
             input: Path::new("Z:/does/not/exist.mp4"),
             verdict: Verdict::Remux,
-            ffmpeg: Path::new("Z:/does/not/exist/ffmpeg.exe"),
+            backend_id: "ffmpeg",
+            backend: Path::new("Z:/does/not/exist/ffmpeg.exe"),
             duration_secs: None,
+            still: None,
         }
     }
 
@@ -254,6 +330,22 @@ mod tests {
         let a = queue.enqueue(fake_request("k1"));
         let b = queue.enqueue(fake_request("k2"));
         assert_ne!(a, b);
+    }
+
+    /// Video and still jobs draw from separate semaphore pools (spec
+    /// §6: "1 video job + 2 still jobs") — a saturated video queue
+    /// must never block a still render, or vice versa. Checked
+    /// directly on the (private, same-module) fields rather than
+    /// through a dedup side effect, which can't actually distinguish
+    /// the two pools (a real cache key already differs by backend id
+    /// between a video and a still job, so two jobs ever sharing one
+    /// key never happens in practice either way).
+    #[tokio::test]
+    async fn video_and_still_jobs_use_separate_semaphore_pools() {
+        let (queue, _dir) = temp_queue("semaphore-pools");
+        assert_eq!(queue.video_semaphore.available_permits(), MAX_VIDEO_JOBS);
+        assert_eq!(queue.still_semaphore.available_permits(), MAX_STILL_JOBS);
+        assert_ne!(MAX_VIDEO_JOBS, MAX_STILL_JOBS, "sanity: the two pools are actually configured differently");
     }
 
     #[test]
