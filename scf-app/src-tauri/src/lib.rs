@@ -20,6 +20,7 @@
 mod files;
 mod mcp_relay;
 mod media;
+mod media_config;
 mod media_server;
 mod pipe;
 mod sql;
@@ -315,7 +316,8 @@ pub fn run() {
         .expect("a cache directory for this OS")
         .join(pipe::IDENTIFIER);
     let (media_server_info, media_handles, media_capabilities, media_queue) =
-        media_server::start(media_backends.clone(), media_cache_dir)
+        media_server::start(
+            media_backends.clone(), media_cache_dir, media_config::load_startup_config())
             .expect("a loopback port for media");
     let relay = mcp_relay::Relay::new();
     let discovery = mcp_relay::start(relay.clone()).expect("a loopback port for the MCP");
@@ -433,6 +435,7 @@ pub fn run() {
         media_server::media_report_capabilities,
         media_server::media_cache_flush,
         media_server::media_cache_stats,
+        media_server::media_set_runtime_settings,
         sql::file_fingerprint,
         sql_socket::sql_socket,
         files::fs_windows,

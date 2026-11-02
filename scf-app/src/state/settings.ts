@@ -10,6 +10,7 @@
  */
 
 import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
 import { windowAppStore } from "../host/windowAppStore.ts";
 import { windowAuditStore } from "../host/windowAuditStore.ts";
 
@@ -76,7 +77,22 @@ async function logSettingsChange(action: string, summary: string):
   }).catch((e: unknown) => { console.error("audit trail write failed:", e); });
 }
 
-export const useSettings = create<SettingsState>((set) => ({
+/** Pushes the two knobs that can change without a restart (`media_
+ *  server.rs`'s `RuntimeSettings`) to the running media server —
+ *  called with both every time, not just the one that changed, since
+ *  the Tauri command sets both at once. Best-effort: a failed push
+ *  just leaves the server on its last-known values until the next
+ *  successful one (or the next app launch, which reads app.db fresh
+ *  regardless). */
+async function pushRuntimeSettings(
+    proxyResolution: number, cacheLimitGb: number): Promise<void> {
+  await invoke("media_set_runtime_settings", {
+    resolutionCap: proxyResolution,
+    cacheLimitBytes: Math.round(cacheLimitGb * 1024 * 1024 * 1024),
+  }).catch((e: unknown) => { console.error("media settings push failed:", e); });
+}
+
+export const useSettings = create<SettingsState>((set, get) => ({
   loaded: false,
   developerMode: false,
   // Optimistic default: correct for everyone who has never touched the
@@ -146,6 +162,7 @@ export const useSettings = create<SettingsState>((set) => ({
     const store = await windowAppStore();
     await store.setPref(PROXY_RESOLUTION_PREF, String(n));
     set({ proxyResolution: n });
+    await pushRuntimeSettings(n, get().cacheLimitGb);
     await logSettingsChange("settings.media.proxyResolution", `set to ${String(n)}p`);
   },
 
@@ -153,6 +170,7 @@ export const useSettings = create<SettingsState>((set) => ({
     const store = await windowAppStore();
     await store.setPref(CACHE_LIMIT_GB_PREF, String(gb));
     set({ cacheLimitGb: gb });
+    await pushRuntimeSettings(get().proxyResolution, gb);
     await logSettingsChange("settings.media.cacheLimitGb", `set to ${String(gb)} GB`);
   },
 }));

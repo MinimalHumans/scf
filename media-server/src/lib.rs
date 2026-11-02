@@ -34,13 +34,41 @@ use serde::Serialize;
 use tokio::net::TcpListener;
 
 pub use handles::Handles;
-pub use queue::{Queue, WorkerStatus};
+pub use queue::{QueueConfig, Queue, RuntimeSettings, WorkerStatus};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerInfo {
     pub url: String,
     pub token: String,
+}
+
+/// Everything about the media pipeline Settings > Media lets a user
+/// change, gathered into one value the caller (`scf-app/src-tauri`'s
+/// startup) builds once, from whatever it finds persisted in app.db, and
+/// hands to [`start`]. `video_workers`/`still_workers` are read once,
+/// into `Queue`'s semaphores, and only take effect at the next launch
+/// (a tokio `Semaphore` has no clean way to shrink at runtime);
+/// `resolution_cap`/`cache_limit_bytes` seed a [`RuntimeSettings`] the
+/// caller can keep updating live after `start` returns.
+#[derive(Clone, Copy)]
+pub struct MediaServerConfig {
+    pub video_workers: usize,
+    pub still_workers: usize,
+    pub resolution_cap: u32,
+    pub cache_limit_bytes: u64,
+}
+
+impl Default for MediaServerConfig {
+    fn default() -> Self {
+        let q = QueueConfig::default();
+        MediaServerConfig {
+            video_workers: q.video_workers,
+            still_workers: q.still_workers,
+            resolution_cap: 1080,
+            cache_limit_bytes: media_core::DEFAULT_VIDEO_CAP_BYTES + media_core::DEFAULT_STILL_CAP_BYTES,
+        }
+    }
 }
 
 fn new_token() -> String {
@@ -64,6 +92,7 @@ fn new_token() -> String {
 pub fn start(
     backends: media_core::Backends,
     cache_dir: PathBuf,
+    config: MediaServerConfig,
 ) -> std::io::Result<(ServerInfo, Handles, media_core::Capabilities, Queue, impl Future<Output = ()>)> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
@@ -75,7 +104,9 @@ pub fn start(
     let still_probe_cache = media_core::StillProbeCache::default();
     let cache = media_core::Cache::open(cache_dir.join("media"))
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    let queue = Queue::new(cache);
+    let queue_config = QueueConfig { video_workers: config.video_workers, still_workers: config.still_workers };
+    let runtime = RuntimeSettings::new(config.resolution_cap, config.cache_limit_bytes);
+    let queue = Queue::new(cache, queue_config, runtime);
 
     let info = ServerInfo { url: format!("http://127.0.0.1:{port}"), token: token.clone() };
     let ctx = serve::Context {

@@ -25,30 +25,104 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Child;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use media_core::{Cache, DerivedParams, JobState, StillDerivedParams, StillSelection, Verdict};
 use serde::Serialize;
 use tokio::sync::Semaphore;
 
-/// Not user-configurable yet (the plan's decision 7) — spec §6's
-/// "default 1 video job".
-const MAX_VIDEO_JOBS: usize = 1;
+/// Settings > Media's "Worker threads" defaults — the same figures this
+/// module used to hardcode as fixed `MAX_VIDEO_JOBS`/`MAX_STILL_JOBS`
+/// consts, now just what [`QueueConfig::default`] falls back to when
+/// the caller (`scf-app/src-tauri`'s startup, reading app.db) has
+/// nothing saved yet.
+const DEFAULT_VIDEO_WORKERS: usize = 1;
+const DEFAULT_STILL_WORKERS: usize = 2;
 
-/// Spec §6: "default... 2 still jobs" — Phase 4 deferred this ("no
-/// still pipeline yet to need a separate cap"); Phase 5 is that
-/// pipeline, so this is the first phase that actually needs it.
-const MAX_STILL_JOBS: usize = 2;
+/// Worker-pool sizing (spec §6 "Concurrency... user-configurable cap").
+/// Read once, at [`Queue::new`] — a tokio [`Semaphore`] has no clean way
+/// to shrink its permit count at runtime, so a changed setting takes
+/// effect at the next app launch, not live (Settings > Media says so).
+#[derive(Clone, Copy)]
+pub struct QueueConfig {
+    pub video_workers: usize,
+    pub still_workers: usize,
+}
 
-/// The software-encoder defaults (spec §7's output profile) — not
-/// user-configurable yet, same as before Phase 8. `serve.rs` starts
-/// from this and fills in `hardware_encoder` itself (from `Backends::
-/// best_hw_encoder`, which this function deliberately takes no
-/// dependency on) before computing its cache-key lookup for the
-/// `/media` route, so the two agree on everything else without this
-/// module needing a `Backends` of its own.
-pub(crate) fn default_derived_params() -> DerivedParams {
-    DerivedParams { resolution_cap: 1080, crf: 23, layer: None, channel: None, hardware_encoder: None }
+impl Default for QueueConfig {
+    fn default() -> Self {
+        QueueConfig { video_workers: DEFAULT_VIDEO_WORKERS, still_workers: DEFAULT_STILL_WORKERS }
+    }
+}
+
+/// The subset of Settings > Media that *can* change live, without a
+/// restart: the default proxy resolution and the two cache-kind caps
+/// (split from the UI's single "global cache limit" GB figure by
+/// `media_core::split_cache_cap`). Plain atomics, not a `Mutex`-guarded
+/// struct — every reader just wants the current number, never a
+/// consistent snapshot of more than one field at once, and this is read
+/// on every `/media` request.
+#[derive(Clone)]
+pub struct RuntimeSettings {
+    resolution_cap: Arc<AtomicU32>,
+    video_cap_bytes: Arc<AtomicU64>,
+    still_cap_bytes: Arc<AtomicU64>,
+}
+
+impl RuntimeSettings {
+    pub fn new(resolution_cap: u32, cache_limit_bytes: u64) -> Self {
+        let (video, still) = media_core::split_cache_cap(cache_limit_bytes);
+        RuntimeSettings {
+            resolution_cap: Arc::new(AtomicU32::new(resolution_cap)),
+            video_cap_bytes: Arc::new(AtomicU64::new(video)),
+            still_cap_bytes: Arc::new(AtomicU64::new(still)),
+        }
+    }
+
+    pub fn resolution_cap(&self) -> u32 {
+        self.resolution_cap.load(Ordering::Relaxed)
+    }
+
+    pub fn video_cap_bytes(&self) -> u64 {
+        self.video_cap_bytes.load(Ordering::Relaxed)
+    }
+
+    pub fn still_cap_bytes(&self) -> u64 {
+        self.still_cap_bytes.load(Ordering::Relaxed)
+    }
+
+    pub fn set_resolution_cap(&self, n: u32) {
+        self.resolution_cap.store(n, Ordering::Relaxed);
+    }
+
+    /// Re-splits `total_bytes` the same way `new` did, so a later change
+    /// to the one GB figure the UI shows keeps the two pools at the same
+    /// ratio rather than drifting independently.
+    pub fn set_cache_limit_bytes(&self, total_bytes: u64) {
+        let (video, still) = media_core::split_cache_cap(total_bytes);
+        self.video_cap_bytes.store(video, Ordering::Relaxed);
+        self.still_cap_bytes.store(still, Ordering::Relaxed);
+    }
+}
+
+impl Default for RuntimeSettings {
+    fn default() -> Self {
+        RuntimeSettings::new(
+            1080, media_core::DEFAULT_VIDEO_CAP_BYTES + media_core::DEFAULT_STILL_CAP_BYTES)
+    }
+}
+
+/// The software-encoder defaults (spec §7's output profile) — CRF isn't
+/// user-configurable yet, same as before Phase 8; `resolution_cap` now
+/// comes from [`RuntimeSettings`] (Settings > Media's "Default proxy
+/// resolution"). `serve.rs` starts from this and fills in
+/// `hardware_encoder` itself (from `Backends::best_hw_encoder`, which
+/// this function deliberately takes no dependency on) before computing
+/// its cache-key lookup for the `/media` route, so the two agree on
+/// everything else without this module needing a `Backends` of its own.
+pub(crate) fn default_derived_params(resolution_cap: u32) -> DerivedParams {
+    DerivedParams { resolution_cap, crf: 23, layer: None, channel: None, hardware_encoder: None }
 }
 
 /// Phase 5's still output profile (spec §7) — shared with `serve.rs`
@@ -98,6 +172,16 @@ pub struct Queue {
     /// by, a single running video conversion.
     video_semaphore: Arc<Semaphore>,
     still_semaphore: Arc<Semaphore>,
+    /// Each pool's configured size (`QueueConfig`, read once at `new`) —
+    /// `worker_status` needs these directly now that they're no longer
+    /// fixed consts a reader could just name.
+    video_max: usize,
+    still_max: usize,
+    /// Settings > Media's live-updatable knobs (resolution cap, cache
+    /// caps) — shared via `Arc`, so every clone of this `Queue` (one per
+    /// in-flight HTTP connection — see `lib.rs`'s `ctx.clone()`) sees a
+    /// setting change the instant `RuntimeSettings::set_*` is called.
+    runtime: RuntimeSettings,
     /// Running jobs only — a cancel needs the actual OS process handle,
     /// which nothing in `Cache`'s SQLite rows can give it.
     running: Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>,
@@ -128,9 +212,8 @@ pub struct Queue {
 }
 
 /// Spec §9 dashboard's "Worker status: slots in use". `_max` is each
-/// pool's fixed cap (not yet user-configurable — same as
-/// `MAX_VIDEO_JOBS`/`MAX_STILL_JOBS` themselves), included so the
-/// frontend never hardcodes it a second time.
+/// pool's configured cap (`QueueConfig`, fixed for the life of this
+/// process), included so the frontend never hardcodes it a second time.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerStatus {
@@ -223,7 +306,7 @@ fn kind_str(verdict: Verdict) -> &'static str {
 }
 
 impl Queue {
-    pub fn new(cache: Cache) -> Self {
+    pub fn new(cache: Cache, config: QueueConfig, runtime: RuntimeSettings) -> Self {
         // Startup recovery — spec §6: a `running` row survived a crash,
         // not a job that's still going; an orphaned `.part` belongs to
         // no job once every `running` row above it is gone.
@@ -231,8 +314,11 @@ impl Queue {
         media_core::delete_orphaned_parts(cache.dir());
         Queue {
             cache,
-            video_semaphore: Arc::new(Semaphore::new(MAX_VIDEO_JOBS)),
-            still_semaphore: Arc::new(Semaphore::new(MAX_STILL_JOBS)),
+            video_semaphore: Arc::new(Semaphore::new(config.video_workers)),
+            still_semaphore: Arc::new(Semaphore::new(config.still_workers)),
+            video_max: config.video_workers,
+            still_max: config.still_workers,
+            runtime,
             running: Arc::new(Mutex::new(HashMap::new())),
             progress: Arc::new(Mutex::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -245,23 +331,28 @@ impl Queue {
         &self.cache
     }
 
+    /// Settings > Media's live knobs — see [`RuntimeSettings`].
+    pub fn runtime(&self) -> &RuntimeSettings {
+        &self.runtime
+    }
+
     pub fn progress_of(&self, job_id: &str) -> Option<f64> {
         self.progress.lock().unwrap().get(job_id).copied()
     }
 
-    /// Slots in use vs. the (fixed, not yet user-configurable) cap in
-    /// each pool — spec §9's dashboard "Worker status". Counting
-    /// `MAX_* - available_permits()` rather than `self.running`'s own
-    /// length: a permit is held for the whole spawned task, including
-    /// the brief window after it's acquired but before `run_conversion`
-    /// inserts into `running`, so `running.len()` would undercount a
-    /// job that's just about to start.
+    /// Slots in use vs. each pool's configured cap (`QueueConfig`) —
+    /// spec §9's dashboard "Worker status". Counting `_max -
+    /// available_permits()` rather than `self.running`'s own length: a
+    /// permit is held for the whole spawned task, including the brief
+    /// window after it's acquired but before `run_conversion` inserts
+    /// into `running`, so `running.len()` would undercount a job that's
+    /// just about to start.
     pub fn worker_status(&self) -> WorkerStatus {
         WorkerStatus {
-            video_in_use: MAX_VIDEO_JOBS - self.video_semaphore.available_permits(),
-            video_max: MAX_VIDEO_JOBS,
-            still_in_use: MAX_STILL_JOBS - self.still_semaphore.available_permits(),
-            still_max: MAX_STILL_JOBS,
+            video_in_use: self.video_max - self.video_semaphore.available_permits(),
+            video_max: self.video_max,
+            still_in_use: self.still_max - self.still_semaphore.available_permits(),
+            still_max: self.still_max,
         }
     }
 
@@ -600,7 +691,7 @@ mod tests {
     fn temp_queue(name: &str) -> (Queue, TempDir) {
         let dir = TempDir::new(name);
         let cache = Cache::open(dir.0.clone()).unwrap();
-        (Queue::new(cache), dir)
+        (Queue::new(cache, QueueConfig::default(), RuntimeSettings::default()), dir)
     }
 
     fn fake_request(key: &'static str) -> EnqueueRequest<'static> {
@@ -643,9 +734,9 @@ mod tests {
     #[tokio::test]
     async fn video_and_still_jobs_use_separate_semaphore_pools() {
         let (queue, _dir) = temp_queue("semaphore-pools");
-        assert_eq!(queue.video_semaphore.available_permits(), MAX_VIDEO_JOBS);
-        assert_eq!(queue.still_semaphore.available_permits(), MAX_STILL_JOBS);
-        assert_ne!(MAX_VIDEO_JOBS, MAX_STILL_JOBS, "sanity: the two pools are actually configured differently");
+        assert_eq!(queue.video_semaphore.available_permits(), DEFAULT_VIDEO_WORKERS);
+        assert_eq!(queue.still_semaphore.available_permits(), DEFAULT_STILL_WORKERS);
+        assert_ne!(DEFAULT_VIDEO_WORKERS, DEFAULT_STILL_WORKERS, "sanity: the two pools are actually configured differently");
     }
 
     #[tokio::test]
@@ -653,9 +744,33 @@ mod tests {
         let (queue, _dir) = temp_queue("worker-status-idle");
         let status = queue.worker_status();
         assert_eq!(status.video_in_use, 0);
-        assert_eq!(status.video_max, MAX_VIDEO_JOBS);
+        assert_eq!(status.video_max, DEFAULT_VIDEO_WORKERS);
         assert_eq!(status.still_in_use, 0);
-        assert_eq!(status.still_max, MAX_STILL_JOBS);
+        assert_eq!(status.still_max, DEFAULT_STILL_WORKERS);
+    }
+
+    #[tokio::test]
+    async fn a_custom_queue_config_sizes_both_pools() {
+        let dir = TempDir::new("custom-config");
+        let cache = Cache::open(dir.0.clone()).unwrap();
+        let queue = Queue::new(
+            cache, QueueConfig { video_workers: 3, still_workers: 5 }, RuntimeSettings::default());
+        let status = queue.worker_status();
+        assert_eq!(status.video_max, 3);
+        assert_eq!(status.still_max, 5);
+    }
+
+    #[test]
+    fn runtime_settings_can_be_updated_live() {
+        let runtime = RuntimeSettings::new(1080, 2 * 1024 * 1024 * 1024 + 512 * 1024 * 1024);
+        assert_eq!(runtime.resolution_cap(), 1080);
+        runtime.set_resolution_cap(720);
+        assert_eq!(runtime.resolution_cap(), 720);
+
+        let before_video = runtime.video_cap_bytes();
+        runtime.set_cache_limit_bytes(10 * 1024 * 1024 * 1024);
+        assert!(runtime.video_cap_bytes() > before_video);
+        assert_eq!(runtime.video_cap_bytes() + runtime.still_cap_bytes(), 10 * 1024 * 1024 * 1024);
     }
 
     /// Phase 8's preemption policy, exercised directly (same module, so
@@ -717,7 +832,7 @@ mod tests {
         std::fs::create_dir_all(tmp.parent().unwrap()).unwrap();
         std::fs::write(&tmp, b"partial").unwrap();
 
-        let _queue = Queue::new(cache.clone());
+        let _queue = Queue::new(cache.clone(), QueueConfig::default(), RuntimeSettings::default());
 
         assert_eq!(cache.get_job(&job).unwrap().state, JobState::Queued);
         assert!(!tmp.exists());

@@ -775,6 +775,19 @@ pub const STILL_KINDS: [&str; 1] = ["render"];
 pub const DEFAULT_VIDEO_CAP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const DEFAULT_STILL_CAP_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Splits a single user-facing "global cache limit" total (Settings >
+/// Media) back into the two kind-group caps [`enforce_quota`] actually
+/// takes, at the same 4:1 ratio [`DEFAULT_VIDEO_CAP_BYTES`]/
+/// [`DEFAULT_STILL_CAP_BYTES`] already have — the two-pool quota split
+/// stays an implementation detail the settings UI never has to know
+/// about; it only ever edits one number.
+pub fn split_cache_cap(total_bytes: u64) -> (u64, u64) {
+    let video_share = DEFAULT_VIDEO_CAP_BYTES as f64
+        / (DEFAULT_VIDEO_CAP_BYTES + DEFAULT_STILL_CAP_BYTES) as f64;
+    let video = (total_bytes as f64 * video_share).round() as u64;
+    (video, total_bytes.saturating_sub(video))
+}
+
 /// Orphaned `.part` files from a previous run (spec §6) — nothing
 /// references them (every live job's row was just reset above, and a
 /// `.part` only ever belongs to a job that's no longer running).
@@ -1193,5 +1206,22 @@ mod tests {
         assert_eq!(stats.stills.count, 1);
         assert_eq!(stats.stills.bytes, 50);
         assert_eq!(stats.stills.hits, 0);
+    }
+
+    #[test]
+    fn split_cache_cap_keeps_the_default_video_still_ratio() {
+        let total = DEFAULT_VIDEO_CAP_BYTES + DEFAULT_STILL_CAP_BYTES;
+        let (video, still) = split_cache_cap(total);
+        assert_eq!(video, DEFAULT_VIDEO_CAP_BYTES);
+        assert_eq!(still, DEFAULT_STILL_CAP_BYTES);
+    }
+
+    #[test]
+    fn split_cache_cap_always_sums_back_to_the_total() {
+        for gb in [1u64, 2, 5, 10] {
+            let total = gb * 1024 * 1024 * 1024;
+            let (video, still) = split_cache_cap(total);
+            assert_eq!(video + still, total);
+        }
     }
 }

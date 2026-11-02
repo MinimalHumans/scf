@@ -8,7 +8,7 @@
 //! state.
 
 use media_core::{Backends, Capabilities};
-use media_server::{Handles, Queue, ServerInfo};
+use media_server::{Handles, MediaServerConfig, Queue, ServerInfo};
 
 /// Bind the server and spawn its accept loop. Call once, at startup,
 /// same as `sql_socket::start`. `backends` is shared with `media.rs`'s
@@ -19,11 +19,24 @@ use media_server::{Handles, Queue, ServerInfo};
 /// `Queue` (Phase 6) rides along so `media_cache_flush` below can reach
 /// the same cache the HTTP listener itself writes to.
 pub fn start(
-    backends: Backends, cache_dir: std::path::PathBuf,
+    backends: Backends, cache_dir: std::path::PathBuf, config: MediaServerConfig,
 ) -> std::io::Result<(ServerInfo, Handles, Capabilities, Queue)> {
-    let (info, handles, capabilities, queue, accept) = media_server::start(backends, cache_dir)?;
+    let (info, handles, capabilities, queue, accept) = media_server::start(backends, cache_dir, config)?;
     tauri::async_runtime::spawn(accept);
     Ok((info, handles, capabilities, queue))
+}
+
+/// Settings > Media's live-updatable knobs (resolution cap, cache
+/// limit) — worker-thread counts aren't here because they only take
+/// effect at the next launch (see `MediaServerConfig`'s doc comment);
+/// those are just read fresh from app.db at startup, same as everything
+/// else `lib.rs`'s `run()` does before building this config.
+#[tauri::command]
+pub fn media_set_runtime_settings(
+    queue: tauri::State<'_, Queue>, resolution_cap: u32, cache_limit_bytes: u64,
+) {
+    queue.runtime().set_resolution_cap(resolution_cap);
+    queue.runtime().set_cache_limit_bytes(cache_limit_bytes);
 }
 
 #[tauri::command]
@@ -93,12 +106,12 @@ pub fn media_cache_stats(
     CacheStatsDto {
         video: KindCacheStats {
             count: stats.video.count, bytes: stats.video.bytes, hits: stats.video.hits,
-            cap_bytes: media_core::DEFAULT_VIDEO_CAP_BYTES,
+            cap_bytes: queue.runtime().video_cap_bytes(),
             project_usage_bytes: usage(&media_core::VIDEO_KINDS),
         },
         stills: KindCacheStats {
             count: stats.stills.count, bytes: stats.stills.bytes, hits: stats.stills.hits,
-            cap_bytes: media_core::DEFAULT_STILL_CAP_BYTES,
+            cap_bytes: queue.runtime().still_cap_bytes(),
             project_usage_bytes: usage(&media_core::STILL_KINDS),
         },
     }

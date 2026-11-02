@@ -34,8 +34,8 @@ use std::path::PathBuf;
 
 pub use backends::Backends;
 pub use cache::{
-    cache_key, delete_orphaned_parts, source_signature, Cache, CacheStats, DerivedParams,
-    EntryInfo, JobInfo, JobState, KindStats, SourceSignature, StillDerivedParams,
+    cache_key, delete_orphaned_parts, source_signature, split_cache_cap, Cache, CacheStats,
+    DerivedParams, EntryInfo, JobInfo, JobState, KindStats, SourceSignature, StillDerivedParams,
     DEFAULT_STILL_CAP_BYTES, DEFAULT_VIDEO_CAP_BYTES, PROFILE_VERSION, STILL_KINDS, VIDEO_KINDS,
 };
 pub use capabilities::Capabilities;

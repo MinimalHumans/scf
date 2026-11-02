@@ -319,7 +319,7 @@ fn serve_media(
             // actual encode — remux (`-c copy`) never touches it, so
             // its cache key stays unaffected by whatever GPU happens to
             // be in this machine.
-            let mut params = crate::queue::default_derived_params();
+            let mut params = crate::queue::default_derived_params(ctx.queue.runtime().resolution_cap());
             if verdict == Verdict::Transcode {
                 params.hardware_encoder = ctx.backends.best_hw_encoder("ffmpeg");
             }
@@ -366,7 +366,7 @@ fn serve_media(
             // so a hit on the entry itself never reads as its own LRU
             // candidate.
             for pid in project_ids {
-                ctx.queue.cache().enforce_quota(pid, &media_core::VIDEO_KINDS, media_core::DEFAULT_VIDEO_CAP_BYTES);
+                ctx.queue.cache().enforce_quota(pid, &media_core::VIDEO_KINDS, ctx.queue.runtime().video_cap_bytes());
             }
             response
         }
@@ -449,7 +449,7 @@ fn serve_still_media(
     };
 
     for pid in project_ids {
-        ctx.queue.cache().enforce_quota(pid, &media_core::STILL_KINDS, media_core::DEFAULT_STILL_CAP_BYTES);
+        ctx.queue.cache().enforce_quota(pid, &media_core::STILL_KINDS, ctx.queue.runtime().still_cap_bytes());
     }
     response
 }
@@ -892,7 +892,8 @@ mod tests {
             capabilities: media_core::Capabilities::default(),
             probe_cache: media_core::ProbeCache::default(),
             still_probe_cache: media_core::StillProbeCache::default(),
-            queue: crate::Queue::new(cache),
+            queue: crate::Queue::new(
+                cache, crate::queue::QueueConfig::default(), crate::queue::RuntimeSettings::default()),
         }
     }
 
