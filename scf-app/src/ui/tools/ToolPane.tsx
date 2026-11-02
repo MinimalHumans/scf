@@ -4,13 +4,26 @@ import { DashboardPane } from "./DashboardPane.tsx";
 import { EventLogView } from "./EventLogView.tsx";
 import { SettingsPane } from "./SettingsPane.tsx";
 
-/** The front tool tab's content, in place of a project's panels. */
-export function ToolPane({ id }: { id: ToolId }): JSX.Element {
+/**
+ * Every open tool tab's content, in place of a project's panels — all
+ * of them stay mounted (just hidden) so switching tabs keeps scroll
+ * position and in-progress state instead of remounting from scratch.
+ * Cheap: unlike a second project tab, a tool tab has no backing file
+ * or project state of its own to duplicate.
+ */
+export function ToolPane({ tools, active }: {
+  tools: ToolId[];
+  active: ToolId | "project";
+}): JSX.Element {
   return (
-    <main className="tool-pane">
-      {id === "events" && <EventLogView />}
-      {id === "settings" && <SettingsPane />}
-      {id === "media" && <DashboardPane />}
-    </main>
+    <>
+      {tools.map((id) => (
+        <main key={id} className="tool-pane" hidden={id !== active}>
+          {id === "events" && <EventLogView />}
+          {id === "settings" && <SettingsPane />}
+          {id === "media" && <DashboardPane />}
+        </main>
+      ))}
+    </>
   );
 }

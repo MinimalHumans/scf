@@ -7,6 +7,7 @@ import {
   menuModel, runCommand, topLevelItems, type CommandContext,
   type MenuItem,
 } from "../../commands/registry.ts";
+import { GearIcon } from "./TitleStrip.tsx";
 
 /** The directory a path sits in, no trailing separator ("" for a bare
  *  file name with no directory at all). */
@@ -127,6 +128,7 @@ function MenuItemButton({ item, ctx, onRun }: {
         <span className="app-menu-check" aria-hidden="true">
           {item.checked ? "✓" : ""}
         </span>
+        {item.id === "file.settings" && <GearIcon />}
         <span className="app-menu-label">{item.label}</span>
         {item.hint !== null
           ? <span className="app-menu-shortcut">{item.hint}</span>

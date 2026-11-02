@@ -107,6 +107,7 @@ function StartShell({ children }: { children: JSX.Element }): JSX.Element {
     hasProject: false, identityOpen: false, toggleIdentity: () => undefined,
   });
   const front = useTabs((t) => t.active);
+  const openTools = useTabs((t) => t.tools);
   // No tab is live here (the start screen only shows when nothing is),
   // but a tab a resume could not reopen, or one left backgrounded while
   // this tab failed, is still worth showing — closable, and clickable
@@ -117,7 +118,8 @@ function StartShell({ children }: { children: JSX.Element }): JSX.Element {
       <TitleStrip ctx={ctx} showProject={hasTabs} />
       {about}
       {licenses}
-      {front === "project" ? children : <ToolPane id={front} />}
+      {front === "project" && children}
+      <ToolPane tools={openTools} active={front} />
     </div>
   );
 }

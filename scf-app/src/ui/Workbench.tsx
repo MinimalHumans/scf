@@ -146,6 +146,7 @@ export function Workbench(): JSX.Element {
   const { navMode, openRow, selectedEntityType, selectedSubject } =
     useStore();
   const front = useTabs((t) => t.active);
+  const openTools = useTabs((t) => t.tools);
 
   // Keeps `assetResolution` current for the menu and Assets-nav badges,
   // which only read it — this is the one place that re-scans, on the
@@ -253,7 +254,8 @@ export function Workbench(): JSX.Element {
                   status={<SaveControls />} />
       {about}
       {licenses}
-      {front !== "project" ? <ToolPane id={front} /> : (
+      <ToolPane tools={openTools} active={front} />
+      {front === "project" && (
       <div className={"panels" +
                        (switchingTab ? " panels-locked" : "") +
                        (switchTakingAWhile ? " panels-switching" : "")}>

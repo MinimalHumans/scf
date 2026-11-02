@@ -19,7 +19,7 @@
 
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { confirm } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { ProjectRow } from "@scf-host/appStore.ts";
 import { windowAppStore } from "../../host/windowAppStore.ts";
@@ -64,7 +64,7 @@ type Section = "general" | "data" | "backends";
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "general", label: "General" },
   { id: "data", label: "Local data" },
-  { id: "backends", label: "Backends" },
+  { id: "backends", label: "Media helpers" },
 ];
 
 function GeneralSection(): JSX.Element {
@@ -288,6 +288,68 @@ function DataSection(): JSX.Element {
   );
 }
 
+function CheckIcon(): JSX.Element {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M3 8.5l3.3 3.3L13 4.5" stroke="currentColor" strokeWidth="1.8"
+            strokeLinecap="round" strokeLinejoin="round" fill="none" />
+    </svg>
+  );
+}
+
+/** Absence, not alarm: an optional add-on that simply isn't installed
+ *  yet is not an error, so this reads as neutral rather than a warning
+ *  triangle or a red "x". */
+function MissingIcon(): JSX.Element {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r="5.6" stroke="currentColor" strokeWidth="1.3"
+              fill="none" />
+      <path d="M5.2 8h5.6" stroke="currentColor" strokeWidth="1.3"
+            strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function FolderIcon(): JSX.Element {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M1.8 4.2c0-.55.45-1 1-1h3.2l1.3 1.5h5.9c.55 0 1 .45 1 1v6.1
+                c0 .55-.45 1-1 1H2.8c-.55 0-1-.45-1-1V4.2Z"
+            stroke="currentColor" strokeWidth="1.2" fill="none"
+            strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** The "Web" column head — a globe rather than the word, to stay
+ *  narrow next to the icon-only buttons it heads. */
+function GlobeIcon(): JSX.Element {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.2" stroke="currentColor" strokeWidth="1.2"
+              fill="none" />
+      <path d="M1.8 8h12.4M8 1.8c2 2 2 10.4 0 12.4M8 1.8c-2 2-2 10.4 0 12.4"
+            stroke="currentColor" strokeWidth="1.2" fill="none" />
+    </svg>
+  );
+}
+
+/** External-link glyph, so an address that leaves the app reads as one
+ *  before it's clicked rather than after. */
+function ExternalLinkIcon(): JSX.Element {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M6.6 3H3.4a1 1 0 0 0-1 1v8.6a1 1 0 0 0 1 1H12a1 1 0 0 0 1-1V9.4"
+            stroke="currentColor" strokeWidth="1.3" fill="none"
+            strokeLinecap="round" />
+      <path d="M9 2.4h4.6V7M13.5 2.5 7.4 8.6" stroke="currentColor"
+            strokeWidth="1.3" fill="none" strokeLinecap="round"
+            strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 /** Display name, download link and what it unlocks, per binary — not a
  *  capability check, just enough for a human reading the summary line.
  *  Deeper capability records are media-core's job, Phase 5 onward. */
@@ -353,6 +415,18 @@ export function BackendsSection(): JSX.Element {
     })().catch((e: unknown) => setError(describe(e)));
   };
 
+  const pickOverride = (id: BackendId, current: string): void => {
+    void (async () => {
+      const path = await open({
+        multiple: false, directory: false,
+        filters: [{ name: "Executable", extensions: ["exe"] }],
+        defaultPath: current.trim() === "" ? undefined : current,
+      });
+      if (path === null) return;
+      commitOverride(id, path);
+    })().catch((e: unknown) => setError(describe(e)));
+  };
+
   const okCount = statuses === null ? 0 :
     BACKEND_IDS.filter((id) => statuses[id]?.ok === true).length;
   const unlocked = statuses === null ? [] : BACKEND_IDS
@@ -361,11 +435,12 @@ export function BackendsSection(): JSX.Element {
 
   return (
     <section>
-      <h3>Backends</h3>
+      <h3>Media helpers</h3>
       <p className="muted small">
-        External tools the media server uses to preview formats the
-        browser can't decode on its own — EXR, ProRes, PSD and the like.
-        None are bundled; point at your own copy if it isn't on PATH.
+        Optional tools that let previews show more of your footage and
+        stills — ProRes, EXR, raw PSD/TIFF, HEIC and the like. Nothing
+        here is required: without them, those files just preview with
+        less detail.
       </p>
       <div className="settings-row">
         <button className="ghost tiny settings-redetect" disabled={busy}
@@ -377,57 +452,81 @@ export function BackendsSection(): JSX.Element {
       {error !== null && <p className="settings-error">{error}</p>}
       {overrides === null && error === null && <p className="muted">Loading…</p>}
       {overrides !== null && (
-      <ul className="settings-pairing-list">
+      <div className="settings-backend-table">
+        <div className="settings-backend-row settings-backend-head">
+          <span>Tool</span>
+          <span className="settings-backend-head-web" title="Web">
+            <GlobeIcon />
+          </span>
+          <span>Status</span>
+          <span>Location</span>
+        </div>
         {BACKEND_IDS.map((id) => {
           const info = BACKEND_INFO[id];
           const status = statuses?.[id] ?? null;
           const override = overrides?.[id] ?? "";
+          const found = status?.ok === true;
+          const host = info.href.replace(/^https?:\/\//, "").split("/")[0];
+          const statusText = status === null ? "Checking…"
+            : found ? (status.version ?? "Found")
+              : "Not installed (optional)";
           return (
-            <li key={id} className="settings-pairing-row">
-              <div className="settings-pairing-main">
-                <div className="settings-pairing-title">
-                  <strong>{info.label}</strong>
-                  <span className={status?.ok === false ? "settings-error small" : "muted small"}>
-                    {status === null ? "—"
-                      : status.ok
-                        ? `✓ ${status.version ?? "found"}`
-                        : status.error ?? "not found"}
-                  </span>
-                </div>
-                <span className="muted small mono">
-                  {status?.path ?? "not resolved"}
+            <div key={id} className="settings-backend-row">
+              <strong className="settings-backend-name">{info.label}</strong>
+              <a className="ghost tiny settings-icon-btn" href={info.href}
+                 target="_blank" rel="noopener noreferrer"
+                 title={`Download ${info.label} — opens ${host}`}
+                 aria-label={`Download ${info.label} (opens ${host} in your browser)`}>
+                <ExternalLinkIcon />
+              </a>
+              <div className={"settings-backend-status" +
+                               (status === null ? "" : found ? " found" : " missing")}>
+                <span className="settings-backend-status-icon" aria-hidden="true">
+                  {status !== null && (found ? <CheckIcon /> : <MissingIcon />)}
                 </span>
-                <label className="settings-row">
-                  <span className="muted small">Path override</span>
-                  <input type="text" className="mono" defaultValue={override}
-                         placeholder="auto-detect"
-                         onBlur={(e) => commitOverride(id, e.target.value)} />
-                </label>
+                <span className="small" title={statusText}>{statusText}</span>
               </div>
-              <div className="settings-pairing-actions">
-                <button className="ghost tiny" disabled={status?.path == null}
-                        onClick={() => {
-                          if (status?.path != null) void revealItemInDir(status.path);
-                        }}>
-                  Reveal folder
+              <div className="settings-backend-override">
+                <button type="button" className="ghost tiny settings-icon-btn"
+                        title={`Choose ${info.label}'s executable…`}
+                        aria-label={`Choose ${info.label}'s executable file`}
+                        onClick={() => pickOverride(id, override)}>
+                  <FolderIcon />
                 </button>
-                <a className="ghost tiny" href={info.href}
-                   target="_blank" rel="noopener noreferrer">
-                  Get it
-                </a>
+                {status?.path != null ? (
+                  <button type="button" className="settings-backend-path"
+                          title="Open the containing folder"
+                          aria-label={`Open the folder containing ${info.label}`}
+                          onClick={() => void revealItemInDir(status.path ?? "")}>
+                    {status.path}
+                  </button>
+                ) : (
+                  <span className="muted small mono">
+                    {override === "" ? "auto-detect" : override}
+                  </span>
+                )}
+                {override !== "" && (
+                  <button type="button"
+                          className="ghost tiny settings-backend-clear"
+                          title="Reset to auto-detect"
+                          aria-label={`Reset ${info.label} to auto-detect`}
+                          onClick={() => commitOverride(id, "")}>
+                    ×
+                  </button>
+                )}
               </div>
-            </li>
+            </div>
           );
         })}
-      </ul>
+      </div>
       )}
       <p className="muted small">
         {statuses === null ? "Checking…"
           : okCount === 0
-            ? "No backends found — previews fall back to whatever the " +
-              "browser can decode natively."
-            : `${String(okCount)} of ${String(BACKEND_IDS.length)} found. ` +
-              `Unlocks: ${unlocked.join("; ")}.`}
+            ? "None installed yet — previews fall back to what your " +
+              "browser can show natively."
+            : `${String(okCount)} of ${String(BACKEND_IDS.length)} ` +
+              `installed. Unlocks: ${unlocked.join("; ")}.`}
       </p>
     </section>
   );

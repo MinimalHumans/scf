@@ -77,7 +77,7 @@ button.danger { color: var(--blocker); border-color: var(--blocker); }
 button.ghost, a.ghost { background: none; border-color: transparent; color: var(--paper-dim); }
 a.ghost { text-decoration: none; }
 button.ghost:hover, a.ghost:hover { color: var(--paper); }
-button.tiny { padding: 0 6px; font-size: 11px; }
+button.tiny, a.tiny { padding: 0 6px; font-size: 11px; }
 :focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
 input, select, textarea {
   font: inherit;
@@ -277,6 +277,7 @@ ul { list-style: none; margin: 0; padding: 0; }
 .tab-project.dragging { opacity: 0.6; }
 .title-mark { display: block; height: 22px; width: auto; margin: 0 4px 0 2px; }
 .tab-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-tool-icon { flex-shrink: 0; color: var(--paper-dim); }
 .tab-state { font-size: 11px; line-height: 1; }
 .tab-problem .tab-state { color: var(--amber); }
 .tab-external .tab-state { color: var(--amber); }
@@ -374,6 +375,68 @@ ul { list-style: none; margin: 0; padding: 0; }
 .settings-pairing-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .settings-redetect { display: inline-flex; align-items: center; gap: 5px; }
 .settings-redetect-icon { font-size: 13px; line-height: 1; }
+
+/* Media helpers list: a grid rather than stacked cards, so each row's
+   name/status/location/action cells line up across rows instead of
+   each wrapping to its own height. Every cell is forced to a single
+   line (truncated with a tooltip for the full value) so a long ffmpeg
+   version string can't make that row taller than its neighbours. Each
+   row is `display: contents` so its cells land in the parent grid's
+   columns. */
+.settings-backend-table {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.7fr) auto minmax(120px, 0.9fr)
+                          minmax(220px, 1.8fr);
+  column-gap: 16px;
+  margin: 10px 0 0;
+  align-items: center;
+}
+.settings-backend-row { display: contents; }
+.settings-backend-row > * {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.settings-backend-head > * {
+  padding-bottom: 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--paper-dim);
+}
+.settings-backend-head-web {
+  display: flex; align-items: center; justify-content: center;
+  width: 26px;
+}
+.settings-backend-status {
+  display: flex; align-items: center; gap: 6px;
+}
+.settings-backend-status span:last-child {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.settings-backend-status-icon { display: inline-flex; flex-shrink: 0; color: var(--paper-dim); }
+.settings-backend-status.found .settings-backend-status-icon { color: var(--ok); }
+.settings-backend-status.found span:last-child { color: var(--ok); }
+.settings-backend-status.missing span:last-child { color: var(--paper-dim); }
+.settings-backend-override {
+  display: flex; align-items: center; gap: 6px;
+}
+.settings-backend-path {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; text-align: left; background: none; border: none;
+  padding: 0; font: inherit; color: var(--paper-dim); cursor: pointer;
+}
+.settings-backend-path:hover { color: var(--paper); text-decoration: underline; }
+.settings-backend-clear {
+  flex-shrink: 0; width: 18px; height: 18px; padding: 0; line-height: 1;
+}
+.settings-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0; width: 26px; height: 26px; padding: 0;
+}
 .dashboard-stderr {
   margin: 4px 0 0; padding: 8px; background: var(--ink-2);
   border-radius: 4px; max-height: 160px; overflow-y: auto;
@@ -3412,6 +3475,7 @@ button.strip-span-label:hover { color: var(--amber); }
 .tab:not(.active):hover { color: var(--paper); background: var(--ink-2); }
 .tab-close { padding: 0 5px; line-height: 1; font-size: 14px; }
 .tool-pane { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.tool-pane[hidden] { display: none; }
 
 .elog { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 16px 8px; gap: 8px; }
 .elog-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
