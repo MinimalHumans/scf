@@ -357,6 +357,13 @@ ul { list-style: none; margin: 0; padding: 0; }
 .settings-content section > section:first-of-type h4 { margin-top: 0; }
 .settings-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .settings-row { display: flex; align-items: center; gap: 8px; }
+.settings-field {
+  display: flex; flex-direction: column; gap: 4px; font-size: 13px;
+  color: var(--paper-dim);
+}
+.settings-field input, .settings-field select {
+  width: 90px;
+}
 .settings-error { color: var(--blocker); }
 .settings-pairing-list {
   list-style: none; margin: 10px 0 0; padding: 0; display: flex;

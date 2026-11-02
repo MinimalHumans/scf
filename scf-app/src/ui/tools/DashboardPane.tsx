@@ -2,10 +2,11 @@
 /**
  * DashboardPane — Phase 7's live view onto the media server (docs/
  * media-server-spec.md §9): the job queue and worker slots, the
- * failures list with each job's stderr tail, cache usage against this
- * project's quota with flush actions, and the same backend status
- * panel Settings shows ("shared with settings", per the spec — see
- * `SettingsPane.tsx`'s exported `BackendsSection`).
+ * failures list with each job's stderr tail, and cache usage against
+ * this project's quota with flush actions. Binary detection/overrides
+ * ("Media helpers") live only in Settings > Media now
+ * (`SettingsPane.tsx`'s `BackendsSection`) — this tab is project-scoped
+ * operational state, not global configuration.
  *
  * A tool tab, like Settings and the event log (state/tabs.ts). It
  * needs no project open to be useful — worker/cache/backend state is
@@ -28,7 +29,6 @@ import {
   getCacheStats, listJobs,
   type CacheStats, type DashboardJob, type JobsResponse,
 } from "../../files/mediaDashboard.ts";
-import { BackendsSection } from "./SettingsPane.tsx";
 
 const describe = (e: unknown): string => e instanceof Error ? e.message : String(e);
 
@@ -256,7 +256,6 @@ export function DashboardPane(): JSX.Element {
         )}
         {jobsResponse !== null && <FailuresSection jobs={jobs} onChanged={refresh} />}
         <CacheSection stats={stats} projectId={projectId} onChanged={refresh} />
-        <BackendsSection />
       </div>
     </div>
   );

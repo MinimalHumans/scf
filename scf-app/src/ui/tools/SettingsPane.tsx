@@ -25,7 +25,9 @@ import type { ProjectRow } from "@scf-host/appStore.ts";
 import { windowAppStore } from "../../host/windowAppStore.ts";
 import { windowAuditStore } from "../../host/windowAuditStore.ts";
 import { chooseAssetFolder } from "../../files/assetFolderChooser.ts";
-import { useSettings } from "../../state/settings.ts";
+import {
+  PROXY_RESOLUTIONS, useSettings, type ProxyResolution,
+} from "../../state/settings.ts";
 import { useStore } from "../../state/store.ts";
 import { useTabs } from "../../state/tabs.ts";
 import {
@@ -59,12 +61,12 @@ function formatLastOpened(iso: string, now: Date): string {
 const describe = (e: unknown): string =>
   e instanceof Error ? e.message : String(e);
 
-type Section = "general" | "data" | "backends";
+type Section = "general" | "data" | "media";
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "general", label: "General" },
   { id: "data", label: "Local data" },
-  { id: "backends", label: "Media helpers" },
+  { id: "media", label: "Media" },
 ];
 
 function GeneralSection(): JSX.Element {
@@ -376,6 +378,72 @@ const BACKEND_INFO: Record<BackendId, {
   },
 };
 
+/** Global media-pipeline configuration (worker counts, default proxy
+ *  resolution, combined cache ceiling) — everything project-scoped
+ *  (per-project cache override, the live queue) stays in the Media tab's
+ *  `DashboardPane.tsx`; this is the only place that edits the rest. */
+function MediaSettingsSection(): JSX.Element {
+  const {
+    videoWorkers, stillWorkers, proxyResolution, cacheLimitGb,
+    setVideoWorkers, setStillWorkers, setProxyResolution, setCacheLimitGb,
+  } = useSettings();
+
+  return (
+    <section>
+      <h3>Media</h3>
+      <h4>Worker threads</h4>
+      <p className="muted small">
+        How many ffmpeg/ImageMagick/oiiotool conversions can run at once,
+        per kind. Raising this speeds up a backlog but competes harder for
+        CPU on large ProRes/RAW files. Takes effect next time the app
+        starts.
+      </p>
+      <div className="settings-row">
+        <label className="settings-field">
+          Video
+          <input type="number" min={1} max={8} value={videoWorkers}
+                 onChange={(e) => void setVideoWorkers(
+                   Math.max(1, Number(e.target.value) || 1))} />
+        </label>
+        <label className="settings-field">
+          Stills
+          <input type="number" min={1} max={16} value={stillWorkers}
+                 onChange={(e) => void setStillWorkers(
+                   Math.max(1, Number(e.target.value) || 1))} />
+        </label>
+      </div>
+
+      <h4>Default proxy resolution</h4>
+      <p className="muted small">
+        The target size for a video proxy when nothing more specific asks
+        for one.
+      </p>
+      <select value={proxyResolution}
+              onChange={(e) => void setProxyResolution(
+                Number(e.target.value) as ProxyResolution)}>
+        {PROXY_RESOLUTIONS.map((r) => (
+          <option key={r} value={r}>
+            {r === 720 ? "720p (half-res)" : `${String(r)}p`}
+          </option>
+        ))}
+      </select>
+
+      <h4>Global cache limit</h4>
+      <p className="muted small">
+        The combined ceiling for converted previews across every project,
+        in GB, before the oldest entries are evicted. Per-project limits in
+        the Media tab can only tighten this, never raise it.
+      </p>
+      <label className="settings-field">
+        GB
+        <input type="number" min={0.5} step={0.5} value={cacheLimitGb}
+               onChange={(e) => void setCacheLimitGb(
+                 Math.max(0.5, Number(e.target.value) || 0.5))} />
+      </label>
+    </section>
+  );
+}
+
 /** Exported so Phase 7's `DashboardPane.tsx` can show the same panel
  *  (spec §9: "Backend status panel (shared with settings)") rather
  *  than keeping a second copy of this list in sync by hand. */
@@ -549,7 +617,12 @@ export function SettingsPane(): JSX.Element {
       <div className="settings-content">
         {section === "general" && <GeneralSection />}
         {section === "data" && <DataSection />}
-        {section === "backends" && <BackendsSection />}
+        {section === "media" && (
+          <>
+            <MediaSettingsSection />
+            <BackendsSection />
+          </>
+        )}
       </div>
     </div>
   );
