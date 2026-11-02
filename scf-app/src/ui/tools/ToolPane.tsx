@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { ToolId } from "../../state/tabs.ts";
+import { DashboardPane } from "./DashboardPane.tsx";
 import { EventLogView } from "./EventLogView.tsx";
 import { SettingsPane } from "./SettingsPane.tsx";
 
@@ -9,6 +10,7 @@ export function ToolPane({ id }: { id: ToolId }): JSX.Element {
     <main className="tool-pane">
       {id === "events" && <EventLogView />}
       {id === "settings" && <SettingsPane />}
+      {id === "media" && <DashboardPane />}
     </main>
   );
 }

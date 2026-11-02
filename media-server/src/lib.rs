@@ -14,7 +14,9 @@
 //! oiiotool/magick instead of ffmpeg (Phase 5). Every `/media` request
 //! now also records which project(s) asked for it and enforces that
 //! project's quota (Phase 6), and `/jobs/<id>/retry` clears a failed
-//! job's negative-cache entry.
+//! job's negative-cache entry. `/jobs` (no id, Phase 7) is the
+//! dashboard's own route: the recent job list, redacted of any
+//! absolute path, plus worker slot usage.
 
 mod handles;
 mod queue;
@@ -32,7 +34,7 @@ use serde::Serialize;
 use tokio::net::TcpListener;
 
 pub use handles::Handles;
-pub use queue::Queue;
+pub use queue::{Queue, WorkerStatus};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

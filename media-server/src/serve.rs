@@ -129,6 +129,13 @@ async fn handle_inner(req: Request<Incoming>, ctx: &Context) -> Res {
 
     let route = req.uri().path().to_string();
 
+    // `/jobs` (no id) is the dashboard's own route (Phase 7, spec §9):
+    // the recent job list plus worker slot usage, addressed by nothing
+    // at all — same reason `/jobs/...` below needs no asset handle.
+    if route == "/jobs" {
+        return serve_jobs_list(ctx);
+    }
+
     // `/jobs/...` is addressed by job id, not an asset handle — routed
     // before the handle lookup below, which the other two routes need
     // and this one doesn't.
@@ -176,6 +183,32 @@ async fn handle_inner(req: Request<Incoming>, ctx: &Context) -> Res {
         "/meta" => serve_meta(ctx, Path::new(&path)),
         _ => text(StatusCode::NOT_FOUND, "no such route"),
     }
+}
+
+/// The dashboard's queue/failures list plus worker status (Phase 7,
+/// spec §9) in one response — the frontend buckets the same list by
+/// `state` into "Queue" and "Failures" rather than this making two
+/// round trips for what's one query either way (`Cache::
+/// list_recent_jobs`'s own doc comment). `fileName` is a basename,
+/// never `job.inputPath`'s real absolute path, and `stderrTail` is
+/// already redacted of one by `queue.rs`'s `Failure::from_wait` before
+/// it was ever stored — nothing here needs to re-check either, but the
+/// basename-only rule is enforced right at this boundary regardless of
+/// what a future caller of `list_recent_jobs` might do with the full
+/// path (spec §13: no absolute path anywhere in the API).
+fn serve_jobs_list(ctx: &Context) -> Res {
+    let jobs: Vec<_> = ctx.queue.cache().list_recent_jobs(200).into_iter().map(|j| {
+        let file_name = j.input_path.as_deref()
+            .and_then(|p| Path::new(p).file_name())
+            .and_then(|n| n.to_str());
+        serde_json::json!({
+            "id": j.id, "state": j.state, "error": j.error, "stderrTail": j.stderr_tail,
+            "priority": j.priority, "backendId": j.backend_id, "fileName": file_name,
+            "progress": ctx.queue.progress_of(&j.id),
+            "createdAt": j.created_at, "startedAt": j.started_at, "finishedAt": j.finished_at,
+        })
+    }).collect();
+    json(StatusCode::OK, &serde_json::json!({ "jobs": jobs, "workers": ctx.queue.worker_status() }))
 }
 
 fn serve_job_status(ctx: &Context, job_id: &str) -> Res {
@@ -760,13 +793,36 @@ mod tests {
     #[tokio::test]
     async fn retrying_a_failed_job_clears_its_negative_cache_entry() {
         let ctx = test_ctx(media_core::Backends::default());
-        let job_id = ctx.queue.cache().create_job("some-key", "requested");
+        let job_id = ctx.queue.cache().create_job("some-key", "requested", "ffmpeg", "in.mp4");
         ctx.queue.cache().record_failure("some-key", "ffmpeg exited with code 1");
         assert!(ctx.queue.cache().failure("some-key").is_some());
 
         let res = serve_job_retry(&ctx, &job_id);
         assert_eq!(res.status(), StatusCode::OK);
         assert!(ctx.queue.cache().failure("some-key").is_none());
+    }
+
+    /// Phase 7's dashboard route: the job list carries a bare file
+    /// name (never `job.input_path`'s real absolute path — spec §13),
+    /// plus the worker status `/jobs` bundles alongside it.
+    #[tokio::test]
+    async fn jobs_list_reports_a_file_name_not_a_full_path_and_the_worker_status() {
+        let ctx = test_ctx(media_core::Backends::default());
+        let id = ctx.queue.cache().create_job(
+            "some-key", "requested", "ffmpeg", "C:\\plates\\shot01.mov");
+        ctx.queue.cache().set_job_failed(&id, "ffmpeg exited with 1", Some("shot01.mov: broken"));
+
+        let res = serve_jobs_list(&ctx);
+        assert_eq!(res.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes(res).await).unwrap();
+
+        let job = &body["jobs"][0];
+        assert_eq!(job["fileName"], "shot01.mov");
+        assert_eq!(job["id"], id);
+        assert_eq!(job["state"], "failed");
+        assert!(!job.to_string().contains("C:\\\\plates"), "the full path must never appear");
+
+        assert_eq!(body["workers"]["videoMax"], 1);
     }
 
     /// The full still `/media` loop against a real magick-flattenable

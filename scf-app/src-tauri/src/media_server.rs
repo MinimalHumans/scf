@@ -48,15 +48,59 @@ pub fn media_register_asset(
 /// The explicit "Flush project"/"Flush all" actions (spec §7 "Manual
 /// actions"): `Some(project_id)` drops just that project's refs and
 /// the entries that leaves unreferenced; `None` clears the whole cache.
-/// Not yet wired to a Settings/Dashboard button — Phase 7's dashboard
-/// is where that button lives — but reachable now the same way
-/// `media_register_asset` was ahead of the preview flow that first
-/// called it.
+/// Wired to Phase 7's dashboard (`DashboardPane.tsx`'s "Flush this
+/// project…"/"Flush all…" buttons).
 #[tauri::command]
 pub fn media_cache_flush(queue: tauri::State<'_, Queue>, project_id: Option<String>) {
     match project_id {
         Some(project_id) => queue.cache().flush_project(&project_id),
         None => queue.cache().flush_all(),
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KindCacheStats {
+    pub count: u64,
+    pub bytes: u64,
+    pub hits: u64,
+    pub cap_bytes: u64,
+    /// `None` when `project_id` wasn't given — there's nothing to
+    /// scope usage to.
+    pub project_usage_bytes: Option<u64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheStatsDto {
+    pub video: KindCacheStats,
+    pub stills: KindCacheStats,
+}
+
+/// Dashboard cache stats (spec §9: "usage vs project cap per kind,
+/// entry counts, hit rate"). A Tauri command rather than an HTTP route
+/// on the media server, like `media_cache_flush` above and for the
+/// same reason: `project_id` is a real filesystem path in this
+/// implementation (see `media-core`'s `cache.rs` module doc), and the
+/// loopback API never accepts or returns one (spec §13).
+#[tauri::command]
+pub fn media_cache_stats(
+    queue: tauri::State<'_, Queue>, project_id: Option<String>,
+) -> CacheStatsDto {
+    let stats = queue.cache().stats();
+    let usage = |kinds: &[&str]| project_id.as_deref()
+        .map(|p| queue.cache().project_usage_bytes(p, kinds));
+    CacheStatsDto {
+        video: KindCacheStats {
+            count: stats.video.count, bytes: stats.video.bytes, hits: stats.video.hits,
+            cap_bytes: media_core::DEFAULT_VIDEO_CAP_BYTES,
+            project_usage_bytes: usage(&media_core::VIDEO_KINDS),
+        },
+        stills: KindCacheStats {
+            count: stats.stills.count, bytes: stats.stills.bytes, hits: stats.stills.hits,
+            cap_bytes: media_core::DEFAULT_STILL_CAP_BYTES,
+            project_usage_bytes: usage(&media_core::STILL_KINDS),
+        },
     }
 }
 

@@ -70,14 +70,24 @@ fn magick_render_args(input: &Path, out_tmp: &Path, max_long_edge: u32) -> Vec<S
     ]
 }
 
-fn spawn(backend: &Path, args: &[String]) -> std::io::Result<Arc<Mutex<Child>>> {
-    let child = Command::new(backend)
+/// `child` and `stderr_tail` (Phase 7) are shared the same way, and
+/// for the same reason, as `convert.rs`'s `Spawned` — a caller needs
+/// to clone `stderr_tail` out before `wait_still` consumes the rest.
+pub struct SpawnedStill {
+    pub child: Arc<Mutex<Child>>,
+    pub stderr_tail: Arc<Mutex<String>>,
+}
+
+fn spawn(backend: &Path, args: &[String]) -> std::io::Result<SpawnedStill> {
+    let mut child = Command::new(backend)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()?;
-    Ok(Arc::new(Mutex::new(child)))
+    let stderr = child.stderr.take().expect("stderr was piped");
+    let stderr_tail = crate::proc_tail::spawn_tail_reader(stderr);
+    Ok(SpawnedStill { child: Arc::new(Mutex::new(child)), stderr_tail })
 }
 
 /// What [`spawn_still_render`] needs — bundled so the call doesn't
@@ -98,7 +108,7 @@ pub struct StillRenderArgs<'a> {
 
 /// Spawns the right backend for `args.backend_id` ("oiiotool" or
 /// "magick").
-pub fn spawn_still_render(args: StillRenderArgs<'_>) -> std::io::Result<Arc<Mutex<Child>>> {
+pub fn spawn_still_render(args: StillRenderArgs<'_>) -> std::io::Result<SpawnedStill> {
     let built = if args.backend_id == "oiiotool" {
         oiiotool_render_args(
             args.input, args.out_tmp, args.selection, args.width, args.height, args.max_long_edge)
@@ -212,12 +222,12 @@ mod tests {
             .status().unwrap();
         assert!(status.success());
 
-        let child = spawn_still_render(StillRenderArgs {
+        let spawned = spawn_still_render(StillRenderArgs {
             backend_id: "magick", backend_path: Path::new(&magick),
             input: &input, out_tmp: &output,
             selection: &StillSelection::default(), width: Some(32), height: Some(32), max_long_edge: 2048,
         }).unwrap();
-        let result = wait_still(child);
+        let result = wait_still(spawned.child);
 
         assert!(result.is_ok(), "{result:?}");
         assert!(output.exists());
@@ -254,12 +264,12 @@ mod tests {
         assert!(status.success());
 
         let sel = StillSelection::default();
-        let child = spawn_still_render(StillRenderArgs {
+        let spawned = spawn_still_render(StillRenderArgs {
             backend_id: "oiiotool", backend_path: Path::new(&oiiotool),
             input: &input, out_tmp: &output,
             selection: &sel, width: Some(4), height: Some(4), max_long_edge: 2048,
         }).unwrap();
-        let result = wait_still(child);
+        let result = wait_still(spawned.child);
 
         assert!(result.is_ok(), "{result:?}");
         assert!(output.exists());

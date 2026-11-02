@@ -25,10 +25,16 @@
 //! `open()`: WAL mode plus a busy timeout, since the HTTP listener and
 //! any number of in-flight job updates share one file.
 //!
-//! Timestamps are Unix seconds (`INTEGER`), not ISO text — nothing
-//! reads these for display yet (that's Phase 7's dashboard); ordering
-//! is all this phase needs, and a plain integer needs no date-
-//! formatting dependency this crate doesn't otherwise have.
+//! Timestamps are Unix seconds (`INTEGER`), not ISO text — ordering is
+//! all a plain integer needs, and the frontend already does its own
+//! date formatting for everything else it shows, so there's no reason
+//! for this crate to pick up a formatting dependency to match.
+//!
+//! Phase 7 (the dashboard) is `jobs`' other addition: `backend_id`,
+//! `input_path` and `stderr_tail` columns (nothing here reads them —
+//! they're pure passthrough storage for `list_recent_jobs`/`get_job`
+//! to hand back), plus [`Cache::stats`] for the shared store's own
+//! entry counts/bytes/hit-rate figures per kind group.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -208,7 +214,34 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
            PRIMARY KEY (project_id, key)
          );
          CREATE INDEX IF NOT EXISTS refs_key ON refs (key);",
-    )
+    )?;
+    // Phase 7's dashboard needs more than `jobs` already had: which
+    // file and backend a job is for (so a queue/failures row can show
+    // one without a second lookup), and the failed backend's own
+    // stderr tail (`proc_tail.rs`). `ALTER TABLE` rather than another
+    // `CREATE TABLE IF NOT EXISTS` — the table already exists on every
+    // machine that ran an earlier phase, and SQLite has no `ADD COLUMN
+    // IF NOT EXISTS` old enough to rely on here.
+    add_column_if_missing(conn, "jobs", "backend_id", "TEXT")?;
+    add_column_if_missing(conn, "jobs", "input_path", "TEXT")?;
+    add_column_if_missing(conn, "jobs", "stderr_tail", "TEXT")?;
+    Ok(())
+}
+
+/// A one-time schema migration that tolerates having already run:
+/// `ALTER TABLE ... ADD COLUMN` has no portable "if not exists" short
+/// of a SQLite version this crate doesn't pin, so this just runs it
+/// and swallows exactly the "already there" error rather than
+/// tracking a migration version anywhere.
+fn add_column_if_missing(
+    conn: &Connection, table: &str, column: &str, sql_type: &str,
+) -> rusqlite::Result<()> {
+    match conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {sql_type}"), []) {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+            if msg.contains("duplicate column name") => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -257,6 +290,32 @@ pub struct JobInfo {
     pub key: String,
     pub state: JobState,
     pub error: Option<String>,
+    /// Phase 7's dashboard additions — all present from `create_job`
+    /// onward except `stderr_tail`, which only a failed job ever has.
+    pub priority: String,
+    pub backend_id: Option<String>,
+    pub input_path: Option<String>,
+    pub stderr_tail: Option<String>,
+    pub created_at: i64,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+}
+
+/// Shared between `get_job` and `list_recent_jobs` so the two queries
+/// can never drift into reading `jobs` in a different column order
+/// than [`job_from_row`] expects.
+const JOB_COLUMNS: &str =
+    "id, key, state, error, priority, backend_id, input_path, stderr_tail, \
+     created_at, started_at, finished_at";
+
+fn job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobInfo> {
+    let state: String = row.get(2)?;
+    Ok(JobInfo {
+        id: row.get(0)?, key: row.get(1)?, state: JobState::parse(&state), error: row.get(3)?,
+        priority: row.get(4)?, backend_id: row.get(5)?, input_path: row.get(6)?,
+        stderr_tail: row.get(7)?, created_at: row.get(8)?, started_at: row.get(9)?,
+        finished_at: row.get(10)?,
+    })
 }
 
 /// Shared, cheap to clone — the HTTP listener and the queue's
@@ -345,13 +404,20 @@ impl Cache {
         .unwrap_or(None)
     }
 
-    pub fn create_job(&self, key: &str, priority: &str) -> String {
+    /// `backend_id`/`input_path` (Phase 7) are stored purely for the
+    /// dashboard's "job, file, backend" columns — nothing in the queue
+    /// or cache itself reads them back. `input_path` is the real
+    /// absolute path; see `JobInfo`'s own doc and `media-server`'s
+    /// `serve.rs`, the one place that ever turns it into the file-name-
+    /// only form the HTTP API is allowed to return (spec §13: no
+    /// absolute path anywhere in the API).
+    pub fn create_job(&self, key: &str, priority: &str, backend_id: &str, input_path: &str) -> String {
         let id = new_id();
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
-            "INSERT INTO jobs (id, key, state, priority, created_at)
-             VALUES (?1, ?2, 'queued', ?3, ?4)",
-            rusqlite::params![id, key, priority, now()],
+            "INSERT INTO jobs (id, key, state, priority, backend_id, input_path, created_at)
+             VALUES (?1, ?2, 'queued', ?3, ?4, ?5, ?6)",
+            rusqlite::params![id, key, priority, backend_id, input_path, now()],
         );
         id
     }
@@ -359,18 +425,34 @@ impl Cache {
     pub fn get_job(&self, id: &str) -> Option<JobInfo> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT id, key, state, error FROM jobs WHERE id = ?1",
+            &format!("SELECT {JOB_COLUMNS} FROM jobs WHERE id = ?1"),
             [id],
-            |row| {
-                let state: String = row.get(2)?;
-                Ok(JobInfo {
-                    id: row.get(0)?, key: row.get(1)?,
-                    state: JobState::parse(&state), error: row.get(3)?,
-                })
-            },
+            job_from_row,
         )
         .optional()
         .unwrap_or(None)
+    }
+
+    /// Every job, most recently active first (spec §9's queue list and
+    /// failures list are both just filtered views of this — the
+    /// dashboard buckets by `state` client-side rather than this
+    /// needing two separate queries). `limit` bounds a long-lived
+    /// cache's history from growing the response without bound; there
+    /// is no pagination yet because nothing shows more than one page.
+    pub fn list_recent_jobs(&self, limit: u32) -> Vec<JobInfo> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            &format!(
+                "SELECT {JOB_COLUMNS} FROM jobs \
+                 ORDER BY COALESCE(finished_at, started_at, created_at) DESC LIMIT ?1"
+            ),
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map([limit], job_from_row)
+            .map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default()
     }
 
     pub fn set_job_running(&self, id: &str) {
@@ -382,22 +464,27 @@ impl Cache {
     }
 
     pub fn set_job_done(&self, id: &str) {
-        self.finish(id, JobState::Done, None);
+        self.finish(id, JobState::Done, None, None);
     }
 
-    pub fn set_job_failed(&self, id: &str, error: &str) {
-        self.finish(id, JobState::Failed, Some(error));
+    /// `stderr_tail` (Phase 7) is the failed backend's own output,
+    /// already redacted of any absolute path by the caller
+    /// (`media-server`'s queue, which is the only place that has both
+    /// the tail and the paths that produced it) — this just stores
+    /// whatever it's given.
+    pub fn set_job_failed(&self, id: &str, error: &str, stderr_tail: Option<&str>) {
+        self.finish(id, JobState::Failed, Some(error), stderr_tail);
     }
 
     pub fn set_job_cancelled(&self, id: &str) {
-        self.finish(id, JobState::Cancelled, None);
+        self.finish(id, JobState::Cancelled, None, None);
     }
 
-    fn finish(&self, id: &str, state: JobState, error: Option<&str>) {
+    fn finish(&self, id: &str, state: JobState, error: Option<&str>, stderr_tail: Option<&str>) {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
-            "UPDATE jobs SET state = ?1, error = ?2, finished_at = ?3 WHERE id = ?4",
-            rusqlite::params![state.as_str(), error, now(), id],
+            "UPDATE jobs SET state = ?1, error = ?2, stderr_tail = ?3, finished_at = ?4 WHERE id = ?5",
+            rusqlite::params![state.as_str(), error, stderr_tail, now(), id],
         );
     }
 
@@ -543,6 +630,55 @@ impl Cache {
         let _ = conn.execute("DELETE FROM refs", []);
         let _ = conn.execute("DELETE FROM failures", []);
     }
+
+    /// Global, not per-project — spec §9 "Cache: ... entry counts, hit
+    /// rate" is the shared store's own figures; a project's usage
+    /// against its cap is [`Cache::project_usage_bytes`] instead, which
+    /// the dashboard calls separately once it knows which project it's
+    /// showing. "Hit rate" isn't tracked as its own counter: every
+    /// [`Cache::put_entry`] is exactly one miss (the conversion that
+    /// produced the entry) and every [`Cache::touch_entry`] after it is
+    /// exactly one hit, so `hits / (hits + count)` over the entries that
+    /// still exist is that same rate, derived rather than separately
+    /// bookkept.
+    pub fn stats(&self) -> CacheStats {
+        let conn = self.conn.lock().unwrap();
+        CacheStats {
+            video: kind_stats_locked(&conn, &VIDEO_KINDS),
+            stills: kind_stats_locked(&conn, &STILL_KINDS),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KindStats {
+    pub count: u64,
+    pub bytes: u64,
+    pub hits: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheStats {
+    pub video: KindStats,
+    pub stills: KindStats,
+}
+
+fn kind_stats_locked(conn: &Connection, kinds: &[&str]) -> KindStats {
+    let sql = format!(
+        "SELECT COUNT(*), COALESCE(SUM(bytes), 0), COALESCE(SUM(hit_count), 0) \
+         FROM entries WHERE kind IN ({})",
+        kinds_placeholders(kinds, 1),
+    );
+    conn.query_row(&sql, rusqlite::params_from_iter(kinds.iter()), |row| {
+        Ok(KindStats {
+            count: row.get::<_, i64>(0)? as u64,
+            bytes: row.get::<_, i64>(1)? as u64,
+            hits: row.get::<_, i64>(2)? as u64,
+        })
+    })
+    .unwrap_or_default()
 }
 
 /// `project_id`'s own usage-accounting primitive, taking an already-
@@ -720,7 +856,7 @@ mod tests {
     #[test]
     fn a_job_moves_through_its_states() {
         let (cache, _dir) = temp_cache("jobs");
-        let id = cache.create_job("k1", "requested");
+        let id = cache.create_job("k1", "requested", "ffmpeg", "in.mp4");
         assert_eq!(cache.get_job(&id).unwrap().state, JobState::Queued);
         cache.set_job_running(&id);
         assert_eq!(cache.get_job(&id).unwrap().state, JobState::Running);
@@ -731,27 +867,57 @@ mod tests {
     }
 
     #[test]
+    fn create_job_records_its_priority_backend_and_input_path() {
+        let (cache, _dir) = temp_cache("jobs-metadata");
+        let id = cache.create_job("k1", "background", "oiiotool", "C:/plates/shot.exr");
+        let job = cache.get_job(&id).unwrap();
+        assert_eq!(job.priority, "background");
+        assert_eq!(job.backend_id.as_deref(), Some("oiiotool"));
+        assert_eq!(job.input_path.as_deref(), Some("C:/plates/shot.exr"));
+    }
+
+    #[test]
+    fn list_recent_jobs_orders_most_recently_active_first() {
+        let (cache, _dir) = temp_cache("jobs-recent");
+        let first = cache.create_job("k1", "requested", "ffmpeg", "a.mp4");
+        let second = cache.create_job("k2", "requested", "ffmpeg", "b.mp4");
+        // `now()`'s 1-second resolution can't be trusted to separate
+        // two rows created microseconds apart within the same test —
+        // set `created_at` by hand so the ordering under test isn't
+        // racing the clock.
+        let conn = cache.conn.lock().unwrap();
+        conn.execute("UPDATE jobs SET created_at = 1000 WHERE id = ?1", [&first]).unwrap();
+        conn.execute("UPDATE jobs SET created_at = 2000 WHERE id = ?1", [&second]).unwrap();
+        drop(conn);
+
+        let recent = cache.list_recent_jobs(10);
+        assert_eq!(recent.first().unwrap().id, second);
+        assert_eq!(recent.get(1).unwrap().id, first);
+    }
+
+    #[test]
     fn a_failed_job_carries_its_error() {
         let (cache, _dir) = temp_cache("jobs-failed");
-        let id = cache.create_job("k1", "requested");
-        cache.set_job_failed(&id, "ffmpeg exited with code 1");
+        let id = cache.create_job("k1", "requested", "ffmpeg", "in.mp4");
+        cache.set_job_failed(&id, "ffmpeg exited with code 1", Some("frame=1 error: broken pipe"));
         let job = cache.get_job(&id).unwrap();
         assert_eq!(job.state, JobState::Failed);
         assert_eq!(job.error.as_deref(), Some("ffmpeg exited with code 1"));
+        assert_eq!(job.stderr_tail.as_deref(), Some("frame=1 error: broken pipe"));
     }
 
     #[test]
     fn a_second_request_for_the_same_key_attaches_to_the_active_job() {
         let (cache, _dir) = temp_cache("dedup");
         assert!(cache.active_job_for("k1").is_none());
-        let id = cache.create_job("k1", "requested");
+        let id = cache.create_job("k1", "requested", "ffmpeg", "in.mp4");
         assert_eq!(cache.active_job_for("k1"), Some(id));
     }
 
     #[test]
     fn a_finished_job_is_no_longer_active_for_dedup() {
         let (cache, _dir) = temp_cache("dedup-finished");
-        let id = cache.create_job("k1", "requested");
+        let id = cache.create_job("k1", "requested", "ffmpeg", "in.mp4");
         cache.set_job_done(&id);
         assert!(cache.active_job_for("k1").is_none());
     }
@@ -759,9 +925,9 @@ mod tests {
     #[test]
     fn startup_recovery_requeues_running_jobs_but_leaves_others_alone() {
         let (cache, _dir) = temp_cache("recovery");
-        let running = cache.create_job("k1", "requested");
+        let running = cache.create_job("k1", "requested", "ffmpeg", "in.mp4");
         cache.set_job_running(&running);
-        let done = cache.create_job("k2", "requested");
+        let done = cache.create_job("k2", "requested", "ffmpeg", "in2.mp4");
         cache.set_job_done(&done);
 
         cache.reset_running_to_queued();
@@ -864,7 +1030,7 @@ mod tests {
         let (cache, dir) = temp_cache("quota-pinned");
         let p1 = put_real_entry(&cache, &dir.path, "v1", "remux", 100);
         cache.add_ref("proj", "v1");
-        let job = cache.create_job("v1", "requested");
+        let job = cache.create_job("v1", "requested", "ffmpeg", "in.mp4");
         cache.set_job_running(&job);
 
         cache.enforce_quota("proj", &VIDEO_KINDS, 0); // an impossibly tight cap
@@ -951,5 +1117,22 @@ mod tests {
     fn retrying_a_key_with_no_failure_is_a_quiet_no_op() {
         let (cache, _dir) = temp_cache("retry-noop");
         cache.retry_failure("not-a-real-key"); // must not panic
+    }
+
+    #[test]
+    fn stats_counts_and_sums_bytes_and_hits_per_kind_group() {
+        let (cache, dir) = temp_cache("stats");
+        put_real_entry(&cache, &dir.path, "v1", "remux", 100);
+        put_real_entry(&cache, &dir.path, "s1", "render", 50);
+        cache.touch_entry("v1");
+        cache.touch_entry("v1");
+
+        let stats = cache.stats();
+        assert_eq!(stats.video.count, 1);
+        assert_eq!(stats.video.bytes, 100);
+        assert_eq!(stats.video.hits, 2);
+        assert_eq!(stats.stills.count, 1);
+        assert_eq!(stats.stills.bytes, 50);
+        assert_eq!(stats.stills.hits, 0);
     }
 }

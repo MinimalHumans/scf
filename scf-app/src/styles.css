@@ -374,6 +374,11 @@ ul { list-style: none; margin: 0; padding: 0; }
 .settings-pairing-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .settings-redetect { display: inline-flex; align-items: center; gap: 5px; }
 .settings-redetect-icon { font-size: 13px; line-height: 1; }
+.dashboard-stderr {
+  margin: 4px 0 0; padding: 8px; background: var(--ink-2);
+  border-radius: 4px; max-height: 160px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-word;
+}
 
 .modal.licenses-dialog {
   background: var(--ink-0, #12151a); border: 1px solid var(--line);

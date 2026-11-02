@@ -52,6 +52,7 @@ export function useAppCommands(screen: {
     showLicenses: () => { setLicensesOpen(true); },
     exitApp: () => { void invoke("quit_app"); },
     openEventLog: () => { useTabs.getState().openTool("events"); },
+    openMediaDashboard: () => { useTabs.getState().openTool("media"); },
   };
 
   const ctxRef = useRef(ctx);

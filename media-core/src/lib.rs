@@ -2,9 +2,11 @@
 //! media-core — backend discovery/validation (Phase 1), probing and
 //! verdicts (Phase 3), the conversion cache plus ffmpeg remux/
 //! transcode (Phase 4), the still-image pipeline via oiiotool/magick
-//! (Phase 5), and per-project quota eviction, flush, and explicit retry
-//! (Phase 6) for the media server (docs/media-server-spec.md §2, §3,
-//! §5, §7).
+//! (Phase 5), per-project quota eviction, flush, and explicit retry
+//! (Phase 6), and the dashboard's own data — richer job records, cache
+//! stats, and a failed backend's redacted stderr tail (`proc_tail.rs`,
+//! Phase 7) — for the media server (docs/media-server-spec.md §2, §3,
+//! §5, §7, §9).
 //!
 //! No Tauri or webview dependency, deliberately: this is the seam a
 //! standalone, differently-hosted media server (the spec's own future —
@@ -19,6 +21,7 @@ mod cache;
 mod capabilities;
 mod convert;
 mod discover;
+mod proc_tail;
 mod probe;
 mod still_convert;
 mod still_probe;
@@ -31,14 +34,15 @@ use std::path::PathBuf;
 
 pub use backends::Backends;
 pub use cache::{
-    cache_key, delete_orphaned_parts, source_signature, Cache, DerivedParams, EntryInfo,
-    JobInfo, JobState, SourceSignature, StillDerivedParams, DEFAULT_STILL_CAP_BYTES,
-    DEFAULT_VIDEO_CAP_BYTES, PROFILE_VERSION, STILL_KINDS, VIDEO_KINDS,
+    cache_key, delete_orphaned_parts, source_signature, Cache, CacheStats, DerivedParams,
+    EntryInfo, JobInfo, JobState, KindStats, SourceSignature, StillDerivedParams,
+    DEFAULT_STILL_CAP_BYTES, DEFAULT_VIDEO_CAP_BYTES, PROFILE_VERSION, STILL_KINDS, VIDEO_KINDS,
 };
 pub use capabilities::Capabilities;
 pub use convert::{spawn_remux, spawn_transcode, wait_with_progress, Spawned};
+pub use proc_tail::redact_paths;
 pub use probe::{probe, ProbeCache, ProbeResult};
-pub use still_convert::{spawn_still_render, wait_still, StillRenderArgs};
+pub use still_convert::{spawn_still_render, wait_still, SpawnedStill, StillRenderArgs};
 pub use still_probe::{
     probe_magick, probe_oiiotool, resolve_still_selection, StillProbeCache, StillProbeResult,
     StillSelection,

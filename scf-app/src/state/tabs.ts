@@ -9,11 +9,12 @@
 
 import { create } from "zustand";
 
-export type ToolId = "events" | "settings";
+export type ToolId = "events" | "settings" | "media";
 
 export const TOOL_TITLES: Record<ToolId, string> = {
   events: "Event log",
   settings: "Settings",
+  media: "Media",
 };
 
 interface TabsState {

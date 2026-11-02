@@ -314,7 +314,10 @@ const BACKEND_INFO: Record<BackendId, {
   },
 };
 
-function BackendsSection(): JSX.Element {
+/** Exported so Phase 7's `DashboardPane.tsx` can show the same panel
+ *  (spec §9: "Backend status panel (shared with settings)") rather
+ *  than keeping a second copy of this list in sync by hand. */
+export function BackendsSection(): JSX.Element {
   const [overrides, setOverrides] =
     useState<Record<BackendId, string> | null>(null);
   const [statuses, setStatuses] = useState<Record<BackendId, BackendStatus> | null>(null);

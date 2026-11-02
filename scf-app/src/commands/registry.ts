@@ -39,6 +39,8 @@ export interface CommandContext {
   exitApp(): void;
   /** Open the event log tab, or bring it forward. */
   openEventLog(): void;
+  /** Open the media dashboard tab, or bring it forward. */
+  openMediaDashboard(): void;
 }
 
 export interface Command {
@@ -96,6 +98,8 @@ export const COMMANDS: readonly Command[] = [
 
   { id: "view.eventLog", label: "Event log", menu: "View",
     run: (c) => { c.openEventLog(); } },
+  { id: "view.mediaDashboard", label: "Media dashboard", menu: "View",
+    run: (c) => { c.openMediaDashboard(); } },
   { id: "view.identity", label: "Row identity", menu: "View",
     shortcut: "Ctrl+I",
     hidden: (c) => !c.developerMode, disabled: needsProject, checked: (c) => c.identityOpen,

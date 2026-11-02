@@ -47,8 +47,15 @@ fn transcode_args(input: &Path, out_tmp: &Path, params: &DerivedParams) -> Vec<S
 /// `-c:v libx264` with a built-in encoder spawns no child processes of
 /// its own to leak, so there is nothing a process-group kill would
 /// catch that a direct kill doesn't.
+///
+/// `stderr_tail` (Phase 7) is shared too, for the same reason: a
+/// caller that wants it on failure (`media-server`'s queue, for the
+/// dashboard's failures list) needs to have cloned the `Arc` out
+/// *before* handing `self` to [`wait_with_progress`], which consumes
+/// it.
 pub struct Spawned {
     pub child: Arc<Mutex<Child>>,
+    pub stderr_tail: Arc<Mutex<String>>,
     stdout: std::process::ChildStdout,
 }
 
@@ -57,10 +64,12 @@ fn spawn(ffmpeg: &Path, args: &[String]) -> std::io::Result<Spawned> {
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()?;
     let stdout = child.stdout.take().expect("stdout was piped");
-    Ok(Spawned { child: Arc::new(Mutex::new(child)), stdout })
+    let stderr = child.stderr.take().expect("stderr was piped");
+    let stderr_tail = crate::proc_tail::spawn_tail_reader(stderr);
+    Ok(Spawned { child: Arc::new(Mutex::new(child)), stderr_tail, stdout })
 }
 
 /// `ffmpeg -c copy` — the codec is already decodable, only the

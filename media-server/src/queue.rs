@@ -6,12 +6,21 @@
 //! that runs them concurrently, bounded, and cancellably, the same
 //! way `scf-app/src-tauri/src/media.rs` already wraps `media_core::
 //! detect_all` in a blocking task.
+//!
+//! Phase 7 adds [`Queue::worker_status`] (spec §9's "slots in use")
+//! and `run_conversion`'s `Failure` type, which carries a failed
+//! backend's own stderr tail alongside its short message — redacted of
+//! the job's input/tmp paths (`media_core::redact_paths`) before it's
+//! ever stored, since a backend's own error text routinely echoes
+//! back the exact path it was given.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Child;
 use std::sync::{Arc, Mutex};
 
 use media_core::{Cache, DerivedParams, JobState, StillDerivedParams, StillSelection, Verdict};
+use serde::Serialize;
 use tokio::sync::Semaphore;
 
 /// Not user-configurable yet (the plan's decision 7) — spec §6's
@@ -52,6 +61,19 @@ pub struct Queue {
     /// its absence here is the honest "nothing yet" the frontend
     /// already treats a missing entry as.
     progress: Arc<Mutex<HashMap<String, f64>>>,
+}
+
+/// Spec §9 dashboard's "Worker status: slots in use". `_max` is each
+/// pool's fixed cap (not yet user-configurable — same as
+/// `MAX_VIDEO_JOBS`/`MAX_STILL_JOBS` themselves), included so the
+/// frontend never hardcodes it a second time.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerStatus {
+    pub video_in_use: usize,
+    pub video_max: usize,
+    pub still_in_use: usize,
+    pub still_max: usize,
 }
 
 /// Only present for a [`Verdict::Render`] request — the selection
@@ -114,6 +136,22 @@ impl Queue {
         self.progress.lock().unwrap().get(job_id).copied()
     }
 
+    /// Slots in use vs. the (fixed, not yet user-configurable) cap in
+    /// each pool — spec §9's dashboard "Worker status". Counting
+    /// `MAX_* - available_permits()` rather than `self.running`'s own
+    /// length: a permit is held for the whole spawned task, including
+    /// the brief window after it's acquired but before `run_conversion`
+    /// inserts into `running`, so `running.len()` would undercount a
+    /// job that's just about to start.
+    pub fn worker_status(&self) -> WorkerStatus {
+        WorkerStatus {
+            video_in_use: MAX_VIDEO_JOBS - self.video_semaphore.available_permits(),
+            video_max: MAX_VIDEO_JOBS,
+            still_in_use: MAX_STILL_JOBS - self.still_semaphore.available_permits(),
+            still_max: MAX_STILL_JOBS,
+        }
+    }
+
     /// An existing queued/running job for `key` is reused (spec §6
     /// "Dedup"); otherwise a new one is created and its run spawned in
     /// the background. Either way returns the job id to poll.
@@ -121,7 +159,8 @@ impl Queue {
         if let Some(existing) = self.cache.active_job_for(req.key) {
             return existing;
         }
-        let id = self.cache.create_job(req.key, req.priority);
+        let id = self.cache.create_job(
+            req.key, req.priority, req.backend_id, &req.input.display().to_string());
         self.spawn_run(id.clone(), req);
         id
     }
@@ -171,9 +210,9 @@ impl Queue {
                     queue.cache.put_entry(&key, &path.display().to_string(), bytes, kind_str(verdict));
                     queue.cache.set_job_done(&id);
                 }
-                Ok(Err(e)) => {
-                    queue.cache.record_failure(&key, &e);
-                    queue.cache.set_job_failed(&id, &e);
+                Ok(Err(f)) => {
+                    queue.cache.record_failure(&key, &f.message);
+                    queue.cache.set_job_failed(&id, &f.message, f.stderr_tail.as_deref());
                 }
                 Err(_join_error) => {
                     // The blocking task panicked — treat it the same as
@@ -181,7 +220,7 @@ impl Queue {
                     // this background task.
                     let msg = "conversion task panicked".to_string();
                     queue.cache.record_failure(&key, &msg);
-                    queue.cache.set_job_failed(&id, &msg);
+                    queue.cache.set_job_failed(&id, &msg, None);
                 }
             }
         });
@@ -217,64 +256,104 @@ struct ConversionJob<'a> {
     still: Option<StillRenderRequest>,
 }
 
+/// A failed conversion's short message (shown everywhere a job's error
+/// is shown) plus, when the backend actually ran and said something on
+/// stderr before failing, that output's last few lines — spec §9's
+/// dashboard "Failures list with per-job stderr tail". Already
+/// redacted of any absolute path by the time it's built (see
+/// `Failure::from_wait`): a backend's own error text routinely echoes
+/// back the exact path we passed it, and that text is what eventually
+/// reaches the HTTP API (spec §13: no absolute path anywhere in it).
+struct Failure {
+    message: String,
+    stderr_tail: Option<String>,
+}
+
+impl Failure {
+    /// Everything that can fail *before* a backend is even running
+    /// (making the tmp dir, the spawn itself) has no stderr to show —
+    /// there was no process to produce any.
+    fn plain(message: String) -> Self {
+        Failure { message, stderr_tail: None }
+    }
+
+    /// A backend ran and then `wait_with_progress`/`wait_still`
+    /// reported it failed. `tail` is that spawn's own `stderr_tail`
+    /// handle, cloned by the caller before the spawn was consumed;
+    /// `redact` is every path given to it on the command line, so the
+    /// backend's own error text (often just that path plus "No such
+    /// file or directory" or similar) never carries one through.
+    fn from_wait(message: String, tail: &Arc<Mutex<String>>, redact: &[&Path]) -> Self {
+        let raw = tail.lock().unwrap().clone();
+        let stderr_tail = (!raw.trim().is_empty()).then(|| media_core::redact_paths(&raw, redact));
+        Failure { message, stderr_tail }
+    }
+}
+
 /// The actual blocking work: spawn the right backend, track it for
 /// cancel, read progress (video only — spec §6: "oiiotool/magick
 /// report start/finish only"), fsync and rename on success. Runs
 /// inside `spawn_blocking` — ordinary synchronous code, same style as
 /// `media_core::probe`.
-fn run_conversion(queue: &Queue, job_id: &str, job: ConversionJob<'_>) -> Result<(), String> {
+fn run_conversion(queue: &Queue, job_id: &str, job: ConversionJob<'_>) -> Result<(), Failure> {
     let tmp = queue.cache.tmp_path(job_id);
     if let Some(dir) = tmp.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(dir).map_err(|e| Failure::plain(e.to_string()))?;
     }
 
     if job.verdict == Verdict::Render {
-        let still = job.still.ok_or_else(|| "a render job with no still request".to_string())?;
-        let child = media_core::spawn_still_render(media_core::StillRenderArgs {
+        let still = job.still
+            .ok_or_else(|| Failure::plain("a render job with no still request".to_string()))?;
+        let spawned = media_core::spawn_still_render(media_core::StillRenderArgs {
             backend_id: job.backend_id, backend_path: job.backend, input: job.input, out_tmp: &tmp,
             selection: &still.selection, width: still.width, height: still.height,
             max_long_edge: STILL_DERIVED_PARAMS.max_long_edge,
-        }).map_err(|e| e.to_string())?;
-        queue.running.lock().unwrap().insert(job_id.to_string(), child.clone());
-        media_core::wait_still(child)?;
+        }).map_err(|e| Failure::plain(e.to_string()))?;
+        queue.running.lock().unwrap().insert(job_id.to_string(), spawned.child.clone());
+        let tail = spawned.stderr_tail.clone();
+        media_core::wait_still(spawned.child)
+            .map_err(|e| Failure::from_wait(e, &tail, &[job.input, &tmp]))?;
     } else {
         let spawned = if job.verdict == Verdict::Remux {
             media_core::spawn_remux(job.backend, job.input, &tmp)
         } else {
             media_core::spawn_transcode(job.backend, job.input, &tmp, &DERIVED_PARAMS)
         }
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| Failure::plain(e.to_string()))?;
 
         queue.running.lock().unwrap().insert(job_id.to_string(), spawned.child.clone());
+        let tail = spawned.stderr_tail.clone();
 
         let job_id_for_progress = job_id.to_string();
         let progress = queue.progress.clone();
         media_core::wait_with_progress(spawned, job.duration_secs, move |p| {
             progress.lock().unwrap().insert(job_id_for_progress.clone(), p);
-        })?;
+        })
+        .map_err(|e| Failure::from_wait(e, &tail, &[job.input, &tmp]))?;
     }
 
     // A cancel may have killed the process and deleted `.part` just as
     // it was finishing successfully — check the output is still there
     // rather than fsync-ing and renaming nothing.
     if !tmp.exists() {
-        return Err("cancelled".to_string());
+        return Err(Failure::plain("cancelled".to_string()));
     }
 
     // Opened read-write, not just `File::open` (read-only): Windows'
     // `FlushFileBuffers` (what `sync_all` calls there) needs write
     // access on the handle or it fails with "Access is denied" —
     // confirmed against a real run during this phase's verification.
-    let file = std::fs::OpenOptions::new().write(true).open(&tmp).map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())?;
+    let file = std::fs::OpenOptions::new().write(true).open(&tmp)
+        .map_err(|e| Failure::plain(e.to_string()))?;
+    file.sync_all().map_err(|e| Failure::plain(e.to_string()))?;
     drop(file);
 
     let key = queue.cache.get_job(job_id).map(|j| j.key).unwrap_or_default();
     let final_path = queue.cache.entry_path(&key, output_ext(job.verdict));
     if let Some(dir) = final_path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(dir).map_err(|e| Failure::plain(e.to_string()))?;
     }
-    std::fs::rename(&tmp, &final_path).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &final_path).map_err(|e| Failure::plain(e.to_string()))?;
     Ok(())
 }
 
@@ -348,11 +427,21 @@ mod tests {
         assert_ne!(MAX_VIDEO_JOBS, MAX_STILL_JOBS, "sanity: the two pools are actually configured differently");
     }
 
+    #[tokio::test]
+    async fn worker_status_reports_each_pools_fixed_cap_when_idle() {
+        let (queue, _dir) = temp_queue("worker-status-idle");
+        let status = queue.worker_status();
+        assert_eq!(status.video_in_use, 0);
+        assert_eq!(status.video_max, MAX_VIDEO_JOBS);
+        assert_eq!(status.still_in_use, 0);
+        assert_eq!(status.still_max, MAX_STILL_JOBS);
+    }
+
     #[test]
     fn new_queue_requeues_running_jobs_and_clears_orphaned_parts() {
         let dir = TempDir::new("startup-recovery");
         let cache = Cache::open(dir.0.clone()).unwrap();
-        let job = cache.create_job("k1", "requested");
+        let job = cache.create_job("k1", "requested", "ffmpeg", "in.mp4");
         cache.set_job_running(&job);
         let tmp = cache.tmp_path(&job);
         std::fs::create_dir_all(tmp.parent().unwrap()).unwrap();
@@ -373,7 +462,7 @@ mod tests {
     #[test]
     fn cancelling_a_queued_job_marks_it_cancelled() {
         let (queue, _dir) = temp_queue("cancel-queued");
-        let id = queue.cache().create_job("k1", "requested");
+        let id = queue.cache().create_job("k1", "requested", "ffmpeg", "in.mp4");
         queue.cancel(&id);
         assert_eq!(queue.cache().get_job(&id).unwrap().state, JobState::Cancelled);
     }

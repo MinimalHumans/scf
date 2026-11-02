@@ -55,7 +55,10 @@ interface ServerInfo { url: string; token: string }
 /** Fetched once for the whole session — every `<img>`/`<video>` the
  *  window ever shows uses the same loopback server. */
 let serverInfo: Promise<ServerInfo> | null = null;
-function mediaServerInfo(): Promise<ServerInfo> {
+/** Exported for `mediaDashboard.ts` (Phase 7), which needs the same
+ *  (url, token) pair for its own `fetch` calls — one memoized request
+ *  for the whole session, shared rather than duplicated. */
+export function mediaServerInfo(): Promise<ServerInfo> {
   serverInfo ??= invoke<ServerInfo>("media_server_info");
   return serverInfo;
 }

@@ -432,6 +432,7 @@ pub fn run() {
         media_server::media_register_asset,
         media_server::media_report_capabilities,
         media_server::media_cache_flush,
+        media_server::media_cache_stats,
         sql::file_fingerprint,
         sql_socket::sql_socket,
         files::fs_windows,
