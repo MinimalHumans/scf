@@ -179,14 +179,14 @@ jobs:
         if: env.PUBLISH == 'true'
         shell: pwsh
         run: |
-          & "$env:RUNNER_TEMP/signing/sign.ps1" "$PWD/scf-app/src-tauri/target/release/scf-editor.exe"
+          & "$env:RUNNER_TEMP/signing/sign.ps1" "$PWD/target/release/scf-editor.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: verify signatures
         if: env.PUBLISH == 'true'
         shell: pwsh
         run: |
-          $release = "scf-app/src-tauri/target/release"
+          $release = "target/release"
           foreach ($file in "$release/scf-editor.exe", (Get-ChildItem "$release/bundle/nsis/*-setup.exe").FullName) {
             $sig = Get-AuthenticodeSignature $file
             "$file : $($sig.Status)"
@@ -200,7 +200,7 @@ jobs:
           $version = (Get-Content scf-app/package.json | ConvertFrom-Json).version
           $sha = "${{ github.sha }}".Substring(0, 7)
           $name = "SCF-Editor-$version-win-x64-$sha"
-          $release = "scf-app/src-tauri/target/release"
+          $release = "target/release"
           $setup = Get-ChildItem "$release/bundle/nsis/*-setup.exe" | Select-Object -First 1
 
           # The licences go at the top and in portable/, where the
@@ -291,7 +291,7 @@ jobs:
         id: package
         run: |
           version=$(node -p "require('./scf-app/package.json').version")
-          bundle=scf-app/src-tauri/target/release/bundle
+          bundle=target/release/bundle
           mkdir -p out
           cp "$bundle"/appimage/*.AppImage "out/SCF-Editor-$version-x86_64.AppImage"
           cp "$bundle"/deb/*.deb "out/SCF-Editor-$version-amd64.deb"
