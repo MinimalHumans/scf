@@ -2,7 +2,8 @@
 # The desktop app, built for Windows and Linux.
 #
 # Separate from ci.yml because it publishes: every push to `main` or
-# `tauri` replaces one rolling prerelease, `desktop-latest`. Windows
+# `prerelease` replaces that branch's rolling prerelease (`desktop-latest`
+# for main, `desktop-prerelease` for prerelease). Windows
 # gives the signed NSIS installer and a zip holding that installer plus
 # a portable copy (the app, which is its own MCP pipe, uninstalled);
 # Linux gives an AppImage and a .deb, unsigned, so the release carries
@@ -18,7 +19,7 @@ name: Desktop
 
 on:
   push:
-    branches: [main, tauri]
+    branches: [main, prerelease]
     tags: ["editor-*"]
   workflow_dispatch:
 
@@ -33,11 +34,13 @@ concurrency:
 
 env:
   NODE_VERSION: "24"
-  RELEASE_TAG: desktop-latest
+  # One rolling prerelease per branch, so the `prerelease` branch's
+  # builds never replace the stable `main` ones.
+  RELEASE_TAG: ${{ github.ref == 'refs/heads/prerelease' && 'desktop-prerelease' || 'desktop-latest' }}
   # Builds that sign and publish: the two branches and release tags.
-  PUBLISH: ${{ github.ref_type == 'tag' || contains(fromJSON('["refs/heads/main", "refs/heads/tauri"]'), github.ref) }}
+  PUBLISH: ${{ github.ref_type == 'tag' || contains(fromJSON('["refs/heads/main", "refs/heads/prerelease"]'), github.ref) }}
   # Artifact Signing, reached by OIDC as the app registration whose
-  # federated credentials trust `main`, `tauri` and the `release`
+  # federated credentials trust `main`, `prerelease` and the `release`
   # environment (none of these are secrets).
   AZURE_CLIENT_ID: cea87653-01f1-4308-9988-8ca28c971a70
   AZURE_TENANT_ID: dbbfdd81-727c-4a58-a3f5-db66a2d489c1
@@ -306,7 +309,7 @@ jobs:
   release:
     name: Publish the release
     needs: [windows, linux]
-    if: github.ref_type == 'tag' || contains(fromJSON('["refs/heads/main", "refs/heads/tauri"]'), github.ref)
+    if: github.ref_type == 'tag' || contains(fromJSON('["refs/heads/main", "refs/heads/prerelease"]'), github.ref)
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
