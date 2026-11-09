@@ -17,6 +17,7 @@
 //! and quits from its menu (and from File > Exit). Closing the window
 //! leaves the app in the tray rather than ending it.
 
+mod claude_desktop;
 mod files;
 mod mcp_relay;
 mod pipe;
@@ -401,6 +402,7 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
         host_setup,
         quit_app,
+        claude_desktop::mcp_install_claude_desktop,
         sql::sql_open,
         sql::sql_close,
         sql::sql_reset,
