@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../state/store.ts";
 import { RecentProjects } from "./RecentProjects.tsx";
 import { SuggestionDialog } from "./SuggestionDialog.tsx";
@@ -128,6 +129,7 @@ export function App(): JSX.Element {
   const hostStatus = useStore((s) => s.hostStatus);
   const connect = useStore((s) => s.connect);
   const resumeTabs = useStore((s) => s.resumeTabs);
+  const openOrFocus = useStore((s) => s.openOrFocus);
   const settingsLoaded = useSettings((s) => s.loaded);
   const tried = useRef(false);
   const connecting = useRef(false);
@@ -143,13 +145,20 @@ export function App(): JSX.Element {
 
   // Launching (or a dev reload) reopens whatever was open before, tab
   // for tab — unless the setting is off, which `resumeTabs` itself
-  // checks once it has an answer from `load` above to check.
+  // checks once it has an answer from `load` above to check. A file
+  // this launch was given to open (a `.scf` double-click, lib.rs's
+  // `launch_path`) comes after and takes the front tab, so it is not
+  // lost under whatever tab resuming happened to land on.
   useEffect(() => {
     if (tried.current || phase !== "start") return;
     if (hostStatus !== "ready" || !settingsLoaded) return;
     tried.current = true;
-    void resumeTabs();
-  }, [phase, hostStatus, settingsLoaded, resumeTabs]);
+    void (async () => {
+      await resumeTabs();
+      const path = await invoke<string | null>("launch_path");
+      if (path !== null) await openOrFocus(path);
+    })();
+  }, [phase, hostStatus, settingsLoaded, resumeTabs, openOrFocus]);
 
   if (phase === "multitab") return <StartShell><MultiTabScreen /></StartShell>;
   if (phase !== "open") return <StartShell><StartScreen /></StartShell>;

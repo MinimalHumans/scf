@@ -32,7 +32,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 /// What the window's own host is given (`src/host/windowHost.ts`).
@@ -72,6 +72,23 @@ fn host_setup(app: AppHandle) -> Result<HostSetup, String> {
 
 /// What the pipe passes when it starts the app.
 const BACKGROUND: &str = "--background";
+
+/// The file this launch was given to open, if any — NSIS's file
+/// association command runs `scf-editor.exe "%1"`, the clicked `.scf`'s
+/// path as the sole argument.
+fn requested_file() -> Option<String> {
+    std::env::args().skip(1).find(|a| a != BACKGROUND)
+}
+
+/// `requested_file()`, for a window already built: taken (not just
+/// read) so the frontend's one query for it at startup is the only one
+/// that ever sees it, and a later reload does not reopen it.
+struct LaunchPath(std::sync::Mutex<Option<String>>);
+
+#[tauri::command]
+fn launch_path(state: tauri::State<LaunchPath>) -> Option<String> {
+    state.0.lock().unwrap().take()
+}
 
 /// How long a pipe-started app waits for its pipe, and a hidden app
 /// whose last pipe has gone waits for another (an agent restarting its
@@ -286,6 +303,7 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     avoid_blank_window();
     let background = std::env::args().any(|a| a == BACKGROUND);
+    let requested = requested_file();
     // A person starting the app again while one is already running:
     // hand off to it ourselves, with a confirmed answer, rather than
     // let `tauri_plugin_single_instance` end this process silently with
@@ -294,8 +312,10 @@ pub fn run() {
     // pipe's own `--background` start keeps the plugin's existing,
     // quieter handling instead (pipe.rs's `connect_or_start` already
     // found nothing running, or it would not be starting one at all).
+    // Any file this launch was given (a `.scf` double-click) rides
+    // along, so the running app opens it instead of just raising.
     if !background {
-        match pipe::raise_existing() {
+        match pipe::raise_existing(requested.as_deref()) {
             Some(true) => return,
             Some(false) => return pipe::alert_unresponsive(),
             None => {}
@@ -309,8 +329,14 @@ pub fn run() {
         // First: a second start hands over here and goes no further.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // The person opening the app again wants to see it; a pipe
-            // starting it needs only that it runs, which it does.
+            // starting it needs only that it runs, which it does. This
+            // is `pipe::raise_existing`'s backstop (see `run`'s comment
+            // above it), reachable only in the race it describes, so any
+            // file in `argv` is handled the same way: emit it, then show.
             if !argv.iter().any(|a| a == BACKGROUND) {
+                if let Some(path) = argv.iter().skip(1).find(|a| a.as_str() != BACKGROUND) {
+                    let _ = app.emit("open-file", path);
+                }
                 show(app);
             }
         }))
@@ -319,6 +345,7 @@ pub fn run() {
         .manage(Seen::default())
         .manage(Asking::default())
         .manage(TrayUp::default())
+        .manage(LaunchPath(std::sync::Mutex::new(requested)))
         .manage(databases)
         .manage(socket)
         .manage(relay.clone())
@@ -369,7 +396,7 @@ pub fn run() {
                 }
             });
             let raise_handle = handle.clone();
-            relay.set_raiser(move |after| {
+            relay.set_raiser(move |open_path, after| {
                 let app = raise_handle.clone();
                 let app_for_show = app.clone();
                 // Run on the main thread, same as a person clicking the
@@ -377,6 +404,9 @@ pub fn run() {
                 // happened, which is what lets a second launch tell a
                 // frozen app from one that merely has not opened yet.
                 let _ = app.run_on_main_thread(move || {
+                    if let Some(path) = open_path {
+                        let _ = app_for_show.emit("open-file", path);
+                    }
                     show(&app_for_show);
                     after();
                 });
@@ -401,6 +431,7 @@ pub fn run() {
         });
     let builder = builder.invoke_handler(tauri::generate_handler![
         host_setup,
+        launch_path,
         quit_app,
         claude_desktop::mcp_install_claude_desktop,
         sql::sql_open,
