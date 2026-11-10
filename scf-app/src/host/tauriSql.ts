@@ -90,9 +90,25 @@ export interface TauriDatabase {
   close: () => Promise<void>;
 }
 
+/**
+ * A reload leaves the last page's databases open in the shell; this
+ * page closes them once, before its own first open. It has to come
+ * before every open, not only the host's: `app.db` and the audit trail
+ * open on their own schedule, and a reset after one of them had opened
+ * closed it under the page ("no open database 1" on the start screen).
+ */
+let reset: Promise<void> | null = null;
+
+function resetOnce(): Promise<void> {
+  reset ??= invoke<void>("sql_reset");
+  reset.catch(() => { reset = null; });
+  return reset;
+}
+
 export async function openTauriDatabase(
     path: string,
     options: { readOnly?: boolean } = {}): Promise<TauriDatabase> {
+  await resetOnce();
   const db = await invoke<number>("sql_open", {
     path, readOnly: options.readOnly ?? false,
   });
