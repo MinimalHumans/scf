@@ -5,7 +5,7 @@ import {
 import { createPortal } from "react-dom";
 import { exec, useStore } from "../state/store.ts";
 import {
-  resolveCached, galleryPreviewFor, type GalleryPreview,
+  resolveCached, galleryPreviewFor, previewWidthFor, type GalleryPreview,
 } from "../files/thumbnailCache.ts";
 import { useFrameUrl } from "./ShotFrame.tsx";
 import { useRememberedOptions } from "./useRememberedOptions.ts";
@@ -249,7 +249,6 @@ export function GalleryView(): JSX.Element {
              }}>
           {items.map((it, i) => (
             <Tile key={String(it.asset["id"])} item={it} colWidth={colWidth}
-                  size={opts.size}
                   names={opts.names} onOpen={() => setViewing(i)}
                   missing={states.get(Number(it.asset["id"])) !== "resolved" ||
                            broken.has(Number(it.asset["id"]))}
@@ -283,10 +282,8 @@ function useOnScreen<T extends Element>(): [RefObject<T>, boolean] {
   return [ref, seen];
 }
 
-function Tile({ item, colWidth, names, size, onOpen, missing, onBroken }: {
+function Tile({ item, colWidth, names, onOpen, missing, onBroken }: {
   item: GalleryItem; colWidth: number; names: boolean;
-  /** The gallery's column tier, so the generated preview matches it. */
-  size: "s" | "m" | "l";
   onOpen: () => void;
   /** Shown only when missing files are asked for: marked as such. */
   missing: boolean;
@@ -327,19 +324,26 @@ function Tile({ item, colWidth, names, size, onOpen, missing, onBroken }: {
   // (meant for "nothing to show") flashed on every image for as long
   // as the read-and-downscale took, instead of only on genuine failure.
   const [previewFailed, setPreviewFailed] = useState(false);
+  // Sized for the column as it is actually drawn, in device pixels: the
+  // columns stretch past their minimum, and a scaled display has more
+  // than one device pixel to a CSS pixel. A preset width, so dragging
+  // the window does not regenerate on every pixel.
+  const previewPx = previewWidthFor(colWidth);
   useEffect(() => {
-    setPreview(null);
+    // Keep the picture already drawn while a sharper one is made, so a
+    // resize does not blank the wall.
     setPreviewFailed(false);
     if (!drawable || parsed === null || resolution === null) return;
     let cancelled = false;
-    void galleryPreviewFor(root, parsed.path, resolution, size).then((p) => {
-      if (cancelled) return;
-      if (p === null) { setPreviewFailed(true); onBroken(); return; }
-      setPreview(p);
-    });
+    void galleryPreviewFor(root, parsed.path, resolution, previewPx)
+      .then((p) => {
+        if (cancelled) return;
+        if (p === null) { setPreviewFailed(true); onBroken(); return; }
+        setPreview(p);
+      });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drawable, parsed?.path, root, resolution, size]);
+  }, [drawable, parsed?.path, root, resolution, previewPx]);
 
   // True while an image is known to be on its way but isn't drawn yet:
   // still resolving, or resolved and drawable but not yet generated.

@@ -237,7 +237,7 @@ export function BoardTile({ tile, board, owner, purposes, live, onChange,
                      ? ` board-tile-historic board-tile-${history.kind}` : "")}>
       <div className="board-thumb">
         <AssetThumb identifier={typeof identifier === "string" ? identifier : null}
-                    size="lg" alt={name} onClick={onOpen}
+                    size="lg" detail="tile" alt={name} onClick={onOpen}
                     region={scopeKind === "region" ? region : null} />
         {primary && <span className="board-star" title="The reference">★</span>}
         {live === true && <span className="board-live">in force</span>}

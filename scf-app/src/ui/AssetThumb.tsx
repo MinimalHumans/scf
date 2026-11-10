@@ -36,8 +36,10 @@ import { previewCapability, LARGE_FILE_BYTES }
   from "@scf-core/preview.ts";
 import { parseIdentifier, type Resolution } from "@scf-core/assets.ts";
 import type { RegionBox } from "@scf-core/anchors.ts";
-import { resolveCached, thumbnailFor, type Thumbnail }
-  from "../files/thumbnailCache.ts";
+import {
+  TILE_THUMB_PX, galleryPreviewFor, previewWidthFor, resolveCached,
+  thumbnailFor, type Thumbnail,
+} from "../files/thumbnailCache.ts";
 import { useStore } from "../state/store.ts";
 import { acquire, release } from "../files/objectUrlCache.ts";
 
@@ -50,9 +52,18 @@ function chipLabel(format: string | null): string {
 }
 
 export function AssetThumb({ identifier, size = "sm", region = null,
-                            alt = "", onClick, onRegion }: {
+                            alt = "", onClick, onRegion,
+                            detail = "slot" }: {
   identifier: string | null;
   size?: ThumbSize;
+  /**
+   * `slot` (the default) is the small square in a list. `tile` is for a
+   * caller whose CSS stretches the thumbnail across a card: the picture
+   * is then drawn several times larger than a slot, and the slot's
+   * raster stretched that far is soft. A tile gets a preview sized for
+   * the box it is drawn in, at the picture's own shape.
+   */
+  detail?: "slot" | "tile";
   /** Crop to this box, in the asset's own pixels. Applied during
    *  generation, and dropped if it does not fit what loaded. */
   region?: RegionBox | null;
@@ -116,7 +127,21 @@ export function AssetThumb({ identifier, size = "sm", region = null,
     if (!drawable || parsed === null || resolution === null) return;
     let cancelled = false;
     void (async () => {
-      const t = await thumbnailFor(root, parsed.path, resolution, region);
+      if (detail === "tile" && region === null) {
+        // The whole picture, at its own shape, wide enough for the box
+        // it is drawn in. The tile's CSS fits it without cropping.
+        const wide = box.current?.clientWidth ?? 0;
+        const p = await galleryPreviewFor(
+          root, parsed.path, resolution,
+          previewWidthFor(wide > 0 ? wide : 256));
+        if (cancelled) return;
+        setThumb(p === null
+          ? null : { dataUrl: p.dataUrl, regionApplied: false });
+        return;
+      }
+      const t = await thumbnailFor(
+        root, parsed.path, resolution, region,
+        detail === "tile" ? TILE_THUMB_PX : undefined);
       if (cancelled) return;
       setThumb(t);
       if (t !== null) onRegion?.(t.regionApplied);
@@ -124,7 +149,7 @@ export function AssetThumb({ identifier, size = "sm", region = null,
     return () => { cancelled = true; };
     // `resolution` is identity-stable per asset because it comes from a
     // memoised promise, so this does not re-run on every render.
-  }, [drawable, parsed?.path, root, resolution, region]);
+  }, [drawable, parsed?.path, root, resolution, region, detail]);
 
   const cls = `asset-thumb asset-thumb-${size}`;
 
