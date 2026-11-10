@@ -37,8 +37,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
-  TITLE_KEYS, getOp, nextShotNumber, readMeta, rowLabel, rowsIncludingCut,
-  titleSlot, validateArgs, whereUsed,
+  TITLE_KEYS, getOp, nextShotNumber, polymorphicTarget, readMeta, rowLabel,
+  rowsIncludingCut, titleSlot, validateArgs, whereUsed,
   type EntityDef, type FieldDef, type Row, type ScfContext, type SqlValue,
 } from "@minimalhumans/scf-core";
 import { HostClientError } from "@minimalhumans/scf-host/client";
@@ -143,10 +143,18 @@ const UUID_LIKE =
  * Turn what the caller wrote into what the schema stores, refusing what
  * it would silently lose: an unknown field, a value outside a closed
  * vocabulary, a reference to nothing.
+ *
+ * A polymorphic reference (§12.1.2) is resolved too: the table it points
+ * into is read from its `polymorphicType` sibling — in this call's values,
+ * else on the row being updated (`existing`) — through
+ * `polymorphicTarget`. These were once passed through untouched, so a
+ * uuid given for `asset_relationship.entity_id` was stored as TEXT
+ * in an integer column: a link to nothing that no gate reported.
  */
 async function normalise(
     ctx: ScfContext, edef: EntityDef,
     input: Record<string, string | number | boolean | null>,
+    existing?: Row,
 ): Promise<Record<string, SqlValue>> {
   const byName = new Map(edef.fields.map((f) => [f.name, f]));
   const out: Record<string, SqlValue> = {};
@@ -158,21 +166,53 @@ async function normalise(
           [...byName.keys()].join(", ")}`);
     }
     let value: SqlValue = typeof raw === "boolean" ? (raw ? 1 : 0) : raw;
-    if (value !== null && field.referenceEntity !== undefined &&
-        field.polymorphicType === undefined && typeof value === "string" &&
-        UUID_LIKE.test(value)) {
+    const targetEntity = field.polymorphicType === undefined
+      ? field.referenceEntity
+      : polymorphicTargetOf(edef, field, input, existing);
+    if (value !== null && targetEntity !== undefined &&
+        typeof value === "string" && UUID_LIKE.test(value)) {
       const target = (await rowsIncludingCut(
-        ctx.exec, field.referenceEntity, "uuid = ?", [value]))[0];
+        ctx.exec, targetEntity, "uuid = ?", [value]))[0];
       if (target === undefined) {
-        throw new Error(`${name}: no ${field.referenceEntity} with uuid ` +
-                        `${value}`);
+        throw new Error(`${name}: no ${targetEntity} with uuid ${value}`);
       }
       value = Number(target["id"]);
+    } else if (typeof value === "string" && value !== "" &&
+               (field.referenceEntity !== undefined ||
+                field.polymorphicType !== undefined) &&
+               !/^\d+$/.test(value)) {
+      // Anything else written into a reference column would be stored as
+      // given and point at nothing.
+      throw new Error(`${name}: give the target's uuid, not "${value}"`);
     }
     assertInVocabulary(field, value);
     out[name] = value;
   }
   return out;
+}
+
+/**
+ * The table a polymorphic column points into for this write, or throws
+ * when the sibling naming it is unset or names a kind the column does not
+ * cover — a uuid cannot be resolved without knowing where to look.
+ */
+function polymorphicTargetOf(
+    edef: EntityDef, field: FieldDef,
+    input: Record<string, string | number | boolean | null>,
+    existing: Row | undefined): string {
+  const sibling = field.polymorphicType!;
+  const kind = sibling in input ? input[sibling] : existing?.[sibling];
+  if (kind === null || kind === undefined || kind === "") {
+    throw new Error(
+      `${field.name}: set ${sibling} too, so the uuid can be resolved`);
+  }
+  const target = polymorphicTarget(field, String(kind));
+  if (target === null || !registry.entities.has(target)) {
+    throw new Error(
+      `${field.name}: ${sibling} "${String(kind)}" names no entity type ` +
+      `${edef.name}.${field.name} can point into`);
+  }
+  return target;
 }
 
 function assertInVocabulary(field: FieldDef, value: SqlValue): void {
@@ -439,7 +479,7 @@ export function registerWriteTools(on: WriteToolsOn): void {
       entityType: string; uuid: string; values: Record<string, Value> }) => {
       const edef = entityDef(entityType);
       const row = await rowByUuid(p.ctx, entityType, uuid);
-      const patch = await normalise(p.ctx, edef, values);
+      const patch = await normalise(p.ctx, edef, values, row);
       const fields: FieldChange[] = Object.entries(patch)
         .filter(([f, to]) => !same(row[f], to))
         .map(([field, to]) => ({ field, from: row[field], to }));

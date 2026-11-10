@@ -290,6 +290,48 @@ describe("the write tools", () => {
     expect(again.plan.plan.op).toBeNull();
   }, 180_000);
 
+  test("a polymorphic reference given as a uuid is stored as the row id",
+      async () => {
+    const ASSET = "f9dfae2d-2cc7-42af-b2ac-d9089025a444"; // id 2
+    const valuesOf = (r: Awaited<ReturnType<typeof call>>) =>
+      (r.plan.plan.op as unknown as
+        { args: { values: Record<string, unknown> } }).args.values;
+
+    // create: the sibling is in the same call.
+    const created = await call("create_row", {
+      entityType: "asset_relationship",
+      values: { asset_id: ASSET, entity_type: "character",
+                entity_id: ELEANOR, relationship_type: "reference" },
+    });
+    expect(created.isError).toBe(false);
+    expect(valuesOf(created)).toMatchObject({ asset_id: 2, entity_id: 1 });
+
+    // A uuid of the wrong kind, an unset sibling, and a bare string are
+    // refused rather than stored as text pointing at nothing.
+    for (const values of [
+      { asset_id: ASSET, entity_type: "prop", entity_id: ELEANOR },
+      { asset_id: ASSET, entity_id: ELEANOR },
+      { asset_id: ASSET, entity_type: "character", entity_id: "Eleanor" },
+    ]) {
+      const r = await call("create_row",
+        { entityType: "asset_relationship", values });
+      expect(r.isError).toBe(true);
+    }
+
+    // update: the sibling comes from the row when the call leaves it out.
+    const COSTUME_LINK = "00000000-0000-4000-8000-0000000b0009";
+    const wrongKind = await call("update_row", { entityType:
+      "asset_relationship", uuid: COSTUME_LINK,
+      values: { entity_id: ELEANOR } });
+    expect(wrongKind.isError).toBe(true);
+    const retargeted = await call("update_row", { entityType:
+      "asset_relationship", uuid: COSTUME_LINK,
+      values: { entity_type: "character", entity_id: ELEANOR } });
+    expect(retargeted.isError).toBe(false);
+    expect(valuesOf(retargeted)).toMatchObject(
+      { entity_type: "character", entity_id: 1 });
+  }, 180_000);
+
   test("a film from an older schema is refused with a way forward",
       async () => {
     const old = join(dir, "old.scf");
