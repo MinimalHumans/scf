@@ -36,7 +36,8 @@ and it applies the change only if the film still matches the plan. Where
 the client supports it, the person is asked directly as well. The host
 holds three more lines: it copies the file before an agent's change
 (unless it did within the last ten minutes), it refuses any change that
-would add an integrity finding the file did not already have, and it
+would leave a reference pointing at nothing (a line that is gone, a row
+that is not there) where the file did not already have that problem, and it
 journals which client made every change (`recent_changes`; the editor
 shows "edited by …"). `--read-only` (or `SCF_MCP_READ_ONLY=1`) offers no
 write tool at all.

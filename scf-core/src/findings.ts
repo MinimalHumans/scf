@@ -43,6 +43,7 @@ import { fileIdentity } from "./fileIdentity.ts";
 import { escapesRoot, parseIdentifier } from "./assets.ts";
 import { presenceProblems } from "./presence.ts";
 import { lineProblems } from "./lines.ts";
+import { danglingReferences } from "./references.ts";
 
 /**
  * How much the finding matters to a CONSUMER of the file.
@@ -91,6 +92,7 @@ export type FindingCode =
   | "vocabulary.unlisted_value"
   | "field.required_absent"
   | "junction.endpoint_absent"
+  | "reference.dangling"
   | "structure.section_mismatch"
   // Link natural keys — spec §6.3, §6.4
   | "junction.duplicate_key"
@@ -239,6 +241,11 @@ export const FINDING_CATALOG: Record<FindingCode, FindingSpec> = {
   "junction.endpoint_absent": {
     severity: "warning",
     title: "Link row missing a required endpoint",
+    spec: "§9.1",
+  },
+  "reference.dangling": {
+    severity: "warning",
+    title: "Reference names no row",
     spec: "§9.1",
   },
 
@@ -624,6 +631,31 @@ export async function collectFindings(
             `The row is incomplete, not invalid — nothing is rejected on ` +
             `write (§9.1).`,
         { table: entity.name, rowIds: ids, count: ids.length }));
+    }
+  }
+
+  // --- references to nothing (§9.1) ---
+  //
+  // The other half of the block above: the column is filled, and what
+  // it is filled with names no row. One finding per column, as the
+  // required-value findings are. The columns a more specific code
+  // covers are left to that code (references.ts).
+  {
+    const byColumn = new Map<string, { entity: string; field: string;
+      target: string; ids: number[] }>();
+    for (const d of await danglingReferences(exec, registry)) {
+      const key = `${d.entity}.${d.field}`;
+      const at = byColumn.get(key) ??
+        { entity: d.entity, field: d.field, target: d.target, ids: [] };
+      at.ids.push(d.rowId);
+      byColumn.set(key, at);
+    }
+    for (const c of byColumn.values()) {
+      out.push(make("reference.dangling",
+        `${c.entity}.${c.field} holds a value naming no row on ` +
+        `${String(c.ids.length)} row(s): the reference is filled and ` +
+        "points nowhere, so every query resolves it to nothing (§9.2).",
+        { table: c.entity, rowIds: c.ids, count: c.ids.length }));
     }
   }
 

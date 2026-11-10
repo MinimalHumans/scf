@@ -81,8 +81,10 @@ whatever the asset depicts, not the film's key art.
 
 ## Resolution
 
-**Implemented 2026-10-09**, as spec 0.65 on schema 2.23, ahead of
-formal acceptance, as 0036 and 0037 were. Schema 2.23 was tagged and
+**Implemented 2026-10-09, accepted 2026-11-10**, as spec 0.65 on
+schema 2.23. It was built ahead of formal acceptance, as 0036 and 0037
+were; the acceptance was recorded in the 2026-11-10 pass over this
+directory. Schema 2.23 was tagged and
 pushed with it on 2026-10-12 (`schema-2.23`). The fixture project
 relates `poster01.png` as its poster, and Q00's normative result
 carries it in `posters`.

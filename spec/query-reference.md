@@ -306,7 +306,7 @@ Specified in **§12.15**. Normative result: [`fixtures/expectations/Q01.result.j
 
 Parameters: `subjectType`, `subject`.
 
-Result members: `subjectType`, `subject`, `groups`, `motifCarriage`, `thematicConnections`.
+Result members: `subjectType`, `subject`, `groups`, `motifCarriage`, `thematicConnections`, `relationships`.
 
 ---
 

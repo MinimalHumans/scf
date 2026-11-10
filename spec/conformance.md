@@ -316,7 +316,7 @@ test an arbitrary file, which is what §4 is for.
 
 ### 5.3 Negative fixtures
 
-Eighteen cases in `fixtures/negative/`, each a minimal database plus
+Nineteen cases in `fixtures/negative/`, each a minimal database plus
 exactly the damage its name describes, with a blessed report beside it.
 
 Minimal on purpose: a case that trips three findings tells you nothing
@@ -481,7 +481,7 @@ your implementation behaved as described — and a reader can check.
 
 | Implementation | Role claimed | Basis |
 |---|---|---|
-| `scf-core` | Reader | The canonical and readiness suites pass against the fixture; `scf-check` exits 0 on it; all eighteen negative fixtures report as blessed. |
+| `scf-core` | Reader | The canonical and readiness suites pass against the fixture; `scf-check` exits 0 on it; all nineteen negative fixtures report as blessed. |
 | `scf-app` | Editor | The app suite passes, including the open→edit→save round trip and third-party content preservation across repeated cycles. |
 | — | Writer | No independent implementation exists. |
 

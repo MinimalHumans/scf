@@ -1,0 +1,51 @@
+{
+  "about": "Three references that are filled and name no row: an ordinary one (a cast link to character 404), a polymorphic one (a thematic connection to character 404, found through its `entity_type` sibling, §12.1.2), and a uuid stored as text in an integer reference column, which is what a writer that skips the uuid-to-row-id step leaves behind. Each is `reference.dangling` (§9.1): one finding per column. None is `junction.endpoint_absent`, because the column is not empty; every query still answers (§9.2), and the link is not there.",
+  "reportFormat": "1.0",
+  "toolSchemaVersion": "2.25",
+  "fileSchemaVersion": "2.25",
+  "source": "fixtures/negative/build/reference-dangling.scf",
+  "counts": {
+    "error": 0,
+    "warning": 3,
+    "info": 0
+  },
+  "clean": true,
+  "findings": [
+    {
+      "code": "reference.dangling",
+      "severity": "warning",
+      "table": "motif_appearance",
+      "rowIds": [
+        1
+      ],
+      "message": "motif_appearance.entity_id holds a value naming no row on 1 row(s): the reference is filled and points nowhere, so every query resolves it to nothing (§9.2).",
+      "count": 1,
+      "spec": "§9.1",
+      "title": "Reference names no row"
+    },
+    {
+      "code": "reference.dangling",
+      "severity": "warning",
+      "table": "scene_character",
+      "rowIds": [
+        1
+      ],
+      "message": "scene_character.character_id holds a value naming no row on 1 row(s): the reference is filled and points nowhere, so every query resolves it to nothing (§9.2).",
+      "count": 1,
+      "spec": "§9.1",
+      "title": "Reference names no row"
+    },
+    {
+      "code": "reference.dangling",
+      "severity": "warning",
+      "table": "thematic_connection",
+      "rowIds": [
+        1
+      ],
+      "message": "thematic_connection.entity_id holds a value naming no row on 1 row(s): the reference is filled and points nowhere, so every query resolves it to nothing (§9.2).",
+      "count": 1,
+      "spec": "§9.1",
+      "title": "Reference names no row"
+    }
+  ]
+}

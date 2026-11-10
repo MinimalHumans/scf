@@ -138,8 +138,12 @@ export async function createScfMcpServer(
           "Show the plan to the person you are working with and wait for " +
           "their approval; then call the same tool again with `confirm` " +
           "set to the `planId`. It re-checks the film and applies only an " +
-          "unchanged plan. A change that would add an integrity finding " +
-          "is refused, the first agent change to a film is preceded by a " +
+          "unchanged plan. A change that would leave a reference " +
+          "pointing at nothing is refused. Linking someone to a scene " +
+          "where the script gives them no cue is not refused: the plan " +
+          "lists it under `risks` as a question, because a character can " +
+          "be present and silent. The first agent change to a film is " +
+          "preceded by a " +
           "snapshot of it, and `recent_changes` shows who changed what. " +
           "SCF is the ground truth of the film: change a row only when " +
           "asked to, and say what you changed."),

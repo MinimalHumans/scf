@@ -1,6 +1,6 @@
 {
   "query": "Q02",
-  "resultFormat": "1.0",
+  "resultFormat": "1.1",
   "schemaVersion": "2.25",
   "parameters": {
     "subjectType": "character",
@@ -240,6 +240,85 @@
             "theme_uuid": "5a2a0ae1-097e-4273-a50e-b4843904e55d"
           }
         }
+      ],
+      "relationships": [
+        {
+          "relationship": {
+            "uuid": "59905336-6c9a-4cc5-9349-3950aa91703c",
+            "fields": {
+              "character_a_uuid": "1afb7bf0-8cee-4e2f-9e8e-015f9b2aaf64",
+              "character_b_uuid": "145417ca-e8e5-4946-aba0-e83575dad182",
+              "directionality": "mutual",
+              "emotional_valence": "complex",
+              "eye_contact_pattern": "She looks away first.",
+              "lifecycle_status": "active",
+              "name": "Eleanor - Marcus",
+              "physical_evolution": "Arm's length -> post-accident thaw (sc 10) -> ruptured by the truth (sc 19) -> the embrace at the door (sc 24).",
+              "power_dynamic": "Power held by silence.",
+              "relationship_type": "family",
+              "touch_comfort": "reserved"
+            }
+          },
+          "other": {
+            "uuid": "1afb7bf0-8cee-4e2f-9e8e-015f9b2aaf64",
+            "fields": {
+              "age": "61",
+              "arc_description": "From a woman who answers questions with tasks to a woman who says the thing and lets it cost her.",
+              "archetype": "the keeper of the house",
+              "backstory": "Came west at nineteen. Buried a husband at forty-two and a daughter at fifty-four. Has not left the valley since.",
+              "casting_status": "tbd",
+              "core_belief": "Work is what love looks like when you can't speak.",
+              "external_goal": "Get the homestead through the winter.",
+              "flaw": "Mistakes silence for mercy — to others and to herself.",
+              "gender": "female",
+              "greatest_fear": "That saying it aloud makes it true forever.",
+              "internal_goal": "To stop blaming her son without having to forgive him.",
+              "lifecycle_status": "active",
+              "motivation": "To keep the place standing, and to not have to say aloud what she believes about the day Ada died.",
+              "name": "Eleanor Cade",
+              "notes": "Written older than most leads on purpose. If casting pushes younger the drowning has to move with her.",
+              "occupation": "Homesteader; midwife to the valley",
+              "pronouns": "she/her",
+              "role": "protagonist",
+              "skills_abilities": "Midwifery, horse handling, reading weather",
+              "summary": "Sixty-one, widowed, running the Cade homestead alone since her daughter drowned. Competence is how she holds grief at arm's length."
+            }
+          },
+          "side": "b"
+        },
+        {
+          "relationship": {
+            "uuid": "e80e1447-7b61-476c-b99f-aca288338423",
+            "fields": {
+              "character_a_uuid": "145417ca-e8e5-4946-aba0-e83575dad182",
+              "character_b_uuid": "7cceb35d-fced-485b-ad73-8d73a9b2e41e",
+              "current_status": "The locket he has not been able to put down.",
+              "directionality": "a_to_b",
+              "emotional_valence": "complex",
+              "history": "He was meant to be watching her.",
+              "lifecycle_status": "active",
+              "name": "Marcus & Ada",
+              "relationship_type": "family",
+              "specific_relationship": "brother and sister"
+            }
+          },
+          "other": {
+            "uuid": "7cceb35d-fced-485b-ad73-8d73a9b2e41e",
+            "fields": {
+              "age": "19 at her death",
+              "archetype": "the absent daughter",
+              "casting_status": "tbd",
+              "core_belief": "Never appears on screen; every design decision about her is an absence decision.",
+              "gender": "female",
+              "lifecycle_status": "active",
+              "name": "Ada Cade",
+              "pronouns": "she/her",
+              "role": "minor",
+              "summary": "Drowned at the creek crossing seven years before the story opens. Present in the film only as objects: a shawl, a locket, a chime by the door."
+            }
+          },
+          "side": "a"
+        }
       ]
     },
     "costumes": [],
@@ -334,7 +413,9 @@
           "provenance": "anchor",
           "state": "unaddressed",
           "detail": "no root named @project is configured in this session",
-          "sizeBytes": null
+          "sizeBytes": null,
+          "lifecycleStatus": "active",
+          "supersedes": null
         }
       ],
       "counts": {

@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # The SCF Format Specification
 
-**Version 1.0-rc.7 — release candidate.**
+**Version 1.0-rc.8 — release candidate.**
 Describes schema version **2.25**.
 Editors: Christopher Smallfield, Jesse Kretschmer (Minimal Humans).
 
@@ -467,6 +467,13 @@ Presence is about **what the file says is on screen**. A `named`
 character is still at the position: they are in its cast, their states
 are in force, and continuity follows them. They are simply not in the
 picture, and nothing that describes the picture asks after them.
+
+**A presence link is authored, not derived from the screenplay.** A
+`scene_character` or `scene_prop` row is valid whether or not the
+subject has a cue line, or any line, in the scene, and a writer MUST
+NOT refuse it on that ground. A link and the script may disagree; that
+is a question an authoring tool MAY put to its user, never a finding
+(§9.4), and never a reason to refuse a write.
 
 ### 2.5 Lists of strings
 
@@ -1085,6 +1092,7 @@ and no convention about ordering.
 
 **Consumers MUST read relationships from both character columns** and
 MUST NOT assume the character of interest occupies `character_a_id`.
+Q01's `relationships` (§12.15) is the worked example.
 
 `character_relationship` is not a link entity — its
 `subject` is `character` — so junction tooling does not cover it.
@@ -1120,6 +1128,9 @@ only one of the six that makes a claim about the FILM, and the rest
 describe the row's editorial standing. A resolver that also excluded
 `archived` would be answering a different question from one that did
 not, and both would believe they conformed.
+
+§12.8 resolves a superseded asset to its successor; that is a
+substitution inside one query, not an exclusion, and is stated there.
 
 This section said "`active` or `cut`" until 0.40, naming two of the six
 the registry declares. A reader implementing from it had to decide for
@@ -1580,6 +1591,13 @@ nothing. Where a more specific finding already covers the same column —
 `relationship.endpoint_absent` for `character_relationship`'s endpoints
 (§6.5) — that one is raised instead, not as well.
 
+A required reference that holds a value naming no row is
+`reference.dangling`, not `junction.endpoint_absent`: the column is
+filled, and what it is filled with points nowhere. `reference.dangling`
+(`warning`) covers every reference column, required or not: every
+conforming reader resolves such a value the same way, to nothing
+(§9.2), and it is almost never what the author meant.
+
 The flag said nothing at all until 2.15. The DDL declares no `NOT
 NULL`, no finding existed, and the only consumer anywhere was a form
 drawing an asterisk, so one implementation could refuse a row that
@@ -1676,6 +1694,7 @@ report holds one finding per table, its `rowIds` every such row and its
 | `structure.section_mismatch` | A section line's `structureRef` names a span not in the file, its label differs from the span's `name`, or it sits above a different scene than the span's `start_scene_id` (§1.3.1). One finding per line and per disagreement. | `screenplay_lines` | the line | 1 |
 | `field.required_absent` | A `required` column is null or empty on rows of an entity that is not a link entity (§9.1). One finding per column. | the entity | those rows | their number |
 | `junction.endpoint_absent` | As above, on a link entity (§9.1). | the link table | those rows | their number |
+| `reference.dangling` | A reference column holds a non-empty value that names no row of its target, cut or not (§9.1). The target is the field's `referenceEntity`, or for a polymorphic column (§12.1.2) the table `polymorphicTarget` gives for the row's sibling value; a polymorphic column whose sibling is unset, or names no registry entity, is not checked. A value that is not an integer names no row. The version columns `parent_id` and `superseded_by_id` are not checked: the `identity.*` codes cover their chains. Where a more specific code covers the column (`relationship.endpoint_absent`, `structure.boundary_dangling`), that one is raised instead, not as well. One finding per column. | the entity | those rows | their number |
 | `vocabulary.unlisted_value` | An open field holds a value outside its known set (§2.4); a `multiselect` is split on commas first. One finding per field and value. | the entity | the rows carrying it | their number |
 | `relationship.endpoint_absent` | `character_a_id` or `character_b_id` is null or names no character in the file (§6.5). One finding per row; such a row is checked for nothing else. | `character_relationship` | the row | 1 |
 | `relationship.self_pair` | Both endpoints name one character. One finding per row; checked for nothing else. | `character_relationship` | the row | 1 |
@@ -1987,7 +2006,7 @@ Every canonical query returns:
 | Field | |
 |---|---|
 | `query` | The query's id, e.g. `"Q05"`. |
-| `resultFormat` | Version of this envelope, on its own track. A field added here is not a change to SCF. **Currently `1.0`**, and every published result carries it. |
+| `resultFormat` | Version of this envelope, on its own track. A field added here is not a change to SCF. **Currently `1.1`**, and every published result carries it. |
 | `schemaVersion` | The schema version the answering implementation implements — its registry's — not the file's `_scf_meta.schema_version`. A result describes the answer, and the answer is shaped by the schema the implementation knows. |
 | `parameters` | What was asked. A parameter identifying a ROW is its **uuid**; a literal parameter — a query id, an enum value — appears as itself. **A row id MUST NOT appear**, so no parameter is a bare number. |
 | `result` | The query's own structure, defined per query below. |
@@ -2105,7 +2124,9 @@ example: Q10 keeps `entity_type` in the connection's `fields`, drops
 `entity_id`, and publishes `targetEntity`, `targetUuid` and `targetName`
 as members of the carrier record. A polymorphic reference whose kind is
 not a registry entity, or whose row is absent, resolves to a null
-`targetUuid`; that is a legitimate answer and not a finding (§9.2).
+`targetUuid`. That is a legitimate answer (§9.2): the query does not
+fail. Where the kind is a registry entity and the row is absent, the
+report carries `reference.dangling` (§9.4.1).
 
 **A result MUST NOT contain a cut row** (§6.6.1). It carries
 `lifecycle_status` on the rows it does contain, because an
@@ -2471,6 +2492,8 @@ Its members are fixed, and one absent is carried as **null**:
 | `state` | **Closed vocabulary** | The resolution state, §8.3. |
 | `detail` | Prose | Why, for anything not `resolved`. Written for a person and **MUST NOT be parsed**; `state` carries the machine-readable answer. Null when `state` is `resolved`. |
 | `sizeBytes` | Number | Read from the resolved file. Null unless `state` is `resolved`. |
+| `lifecycleStatus` | Stored value | The referenced asset's `lifecycle_status`, unset read as `active`. |
+| `supersedes` | Identity or null | The uuid of the superseded asset this reference stands in for, where the paragraph below replaced one. Null otherwise. |
 
 **An asset appears at most once.** The layers are walked most specific
 first and an asset already carried is skipped, so `provenance` names the
@@ -2478,6 +2501,33 @@ first and an asset already carried is skipped, so `provenance` names the
 asset both overridden at the shot and present in the bundle appears once,
 as `shot override`. Reporting it twice would make `counts` disagree with
 the number of distinct assets a consumer has to fetch.
+
+**A superseded asset gives way to its successor.** Where a layer
+brings an asset whose `lifecycle_status` is `superseded`, the
+reference names instead the last asset on its forward version chain:
+`superseded_by_id` followed until a row that is not `superseded`, or
+until the chain names no further row. The successor keeps the layer's
+`provenance`, `role` and `anchorName`, and its `supersedes` member
+names the asset the layer brought. The at-most-once rule then applies
+as written, so a successor that another layer already carries appears
+once, under the stronger layer. The rule keys on the status, the
+author's explicit claim: an `active` asset that has a successor is
+left as it is.
+
+A superseded asset with no successor stays, as it is, and so does one
+whose `superseded_by_id` names a row that is not in the file or whose
+chain returns to a row already visited: the resolver is total (§9.2),
+and `identity.superseded_without_successor`,
+`identity.chain_asymmetric` and `identity.chain_cycle` already report
+each gap.
+
+This is not exclusion. §6.6.1 excludes a row from the film; this
+answers which version of a file to use, and Q15 still walks the whole
+chain. A cut successor is excluded by §6.6.1 like any other cut row,
+and the reference is then dropped, not walked back. `deprecated`,
+`archived` and `draft` assets stay in force, unchanged;
+`lifecycleStatus` makes them visible so that a consumer can choose
+what to do rather than rediscover them.
 
 **Each trail entry is a derived record** (§12.1.4):
 
@@ -3222,6 +3272,7 @@ Parameters: `subjectType` — a literal — and `subject`.
 | `groups` | Entities authored about this subject, each `{ entity, rows }`: the groups in registry order, each group's rows in row order. |
 | `motifCarriage` | Motif appearances that name this subject: `{appearance, motif}`, each projected, the motif null where it is absent. **In story order** by the appearance's scene, then row id; one with no story position last. |
 | `thematicConnections` | Thematic connections that name it, projected, in row order. |
+| `relationships` | For a character subject: each `character_relationship` naming them in either `character_a_id` or `character_b_id`, as `{relationship, other, side}`. `relationship` is the row, projected. `other` is the character at the other end, projected, or null where that character is absent. `side` is `"a"` or `"b"`, the column the subject occupies. In the row order of the `character_relationship` rows. For any other subject kind, `[]`. |
 
 **`groups` is derived, not listed.** A group is any entity whose
 registry `subject` is this kind, at `scope: global`, carrying a
@@ -3237,6 +3288,27 @@ dossier with no change here — which is what `subject` and `scope` are
 for (§0.7).
 
 A group with no rows is omitted rather than carried empty.
+
+**Relationships are carried beside the groups, not in them.**
+`character_relationship` is about both of its characters equally, so
+no single column says *this row is about that subject*, and §6.5
+requires a consumer to read both. It is carried as its own member,
+as `motifCarriage` and `thematicConnections` are, with the other party
+resolved and the subject's side named, because `a_to_b` reads A → B
+and a consumer cannot interpret directionality without knowing which
+end it is on.
+
+A relationship whose other character is **cut** is absent: a
+relationship to someone not in the film joins nothing (§6.6.1). One
+whose other character is **absent from the file** is kept, with
+`other` null (§9.2), and is reported as `relationship.endpoint_absent`
+as before. A relationship naming the subject twice appears once, as
+side `"a"`, with `other` the subject.
+
+**References from other subjects are not dossier content.** A prop's
+`associated_character_id`, a story beat's `pov_character_id`, and
+links such as `scene_character` point *at* the subject without being
+*about* it. Q15 and a where-used walk find them.
 
 ### 12.16 Q02 — Subject in context
 
@@ -3266,6 +3338,11 @@ Parameters: `subjectType`, `subject`, `scene`, and `shot` — optional.
 fact about the character, so it is already in `dossier.groups`, and
 §3.1 asks for it in one place rather than two. What the scene changes is
 which stage is in force.
+
+`relationshipStates` likewise carries the stage in force on each
+relationship, and **not the relationships themselves**, which are
+standing facts and are in the dossier's `relationships`. Each state's
+`character_relationship_uuid` is the `uuid` of one of those entries.
 
 **Fields that do not apply to a subject's kind are null or empty, never
 omitted.** A consumer must be able to tell "not applicable here" from
@@ -3491,7 +3568,10 @@ change to one without the other is a defect.
 | §2.1 registry structure | `scf-core/test/registrySchema.test.ts` |
 | §9.4 finding vocabulary | `scf-core/test/findings.test.ts`, `spec/finding-catalog.json` |
 | §4.3 numbering policy | `scf-core/test/numbering.test.ts` |
-| §9.4 finding behaviour on broken files | `scf-core/test/negativeFixtures.test.ts` (18 cases) |
+| §9.4 finding behaviour on broken files | `scf-core/test/negativeFixtures.test.ts` (19 cases) |
+| §9.1 `reference.dangling` | `scf-core/test/references.test.ts`, `fixtures/negative/reference-dangling.expected.json` |
+| §12.8 a superseded asset gives way | `scf-core/test/supersededGivesWay.test.ts` |
+| §12.15 relationships in the dossier | `scf-core/test/dossierRelationships.test.ts`, `fixtures/expectations/Q01.result.json` |
 | §9.5 serialised report | `scf-core/test/report.test.ts` |
 | §11.1 additive-only schema changes | *unpinned — a policy, checked by review* |
 | §11.2–11.3 forward and backward compatibility | `scf-core/test/extensibility.test.ts`, `scf-app/test/roundTrip.test.ts` |

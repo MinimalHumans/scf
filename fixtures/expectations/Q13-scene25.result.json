@@ -1,6 +1,6 @@
 {
   "query": "Q13",
-  "resultFormat": "1.0",
+  "resultFormat": "1.1",
   "schemaVersion": "2.25",
   "parameters": {
     "subjectType": "character",
@@ -68,7 +68,9 @@
         "provenance": "anchor",
         "state": "unaddressed",
         "detail": "no root named @project is configured in this session",
-        "sizeBytes": null
+        "sizeBytes": null,
+        "lifecycleStatus": "active",
+        "supersedes": null
       }
     ],
     "counts": {

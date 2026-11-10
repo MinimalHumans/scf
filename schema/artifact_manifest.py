@@ -287,6 +287,8 @@ GROUPS: list[tuple[str, str, str, list[tuple[str, str]]]] = [
          "An act whose start scene is cut: it covers no scene (§5.5). Spec conformance.md §5.3."),
         ("fixtures/negative/junction-key-null.expected.json",
          "Two links whose null key columns compare equal (§6.4). Spec conformance.md §5.3."),
+        ("fixtures/negative/reference-dangling.expected.json",
+         "Three references that are filled and name no row (§9.1). Spec conformance.md §5.3."),
         ("fixtures/negative/unknown-table.expected.json",
          "A table the registry does not declare. Spec conformance.md §5.3."),
         ("fixtures/negative/uuid-duplicate.expected.json",

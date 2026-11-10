@@ -114,7 +114,7 @@ Conformance artifacts, all checked on every test run:
 | | |
 |---|---|
 | `fixtures/hollow_creek.scf` | The reference fixture. |
-| `fixtures/negative/` | Eighteen deliberately-broken cases with blessed reports, plus `CASES.json` so anyone can rebuild them. |
+| `fixtures/negative/` | Nineteen deliberately-broken cases with blessed reports, plus `CASES.json` so anyone can rebuild them. |
 | `fixtures/expectations/` | The sixteen canonical queries' normative results, a normative per-case result wherever one position cannot show a member, and the selectors that say what each was asked; plus rendered markdown for eight of them. The markdown is a convenience and is a contract for none. |
 
 `corpus/private` is not checked in, and the blocks that need it

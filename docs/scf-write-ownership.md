@@ -153,7 +153,12 @@ writes against stale assumptions.
 - **Plan → confirm → apply** for destructive ops, reusing
   `planSceneRemoval`, `planCommitStructure`.
 - **Integrity gate.** Run `scanIntegrity` inside the transaction and roll
-  back if the write adds findings the file did not already have.
+  back if the write adds a *blocking* finding the file did not already
+  have: a line anchor whose line is gone, or a reference naming no row
+  (spec §9.4.1, `reference.dangling`). A scene link for someone with no
+  cue there is not one. The format says such a link is legitimate (spec
+  §2.4.1), so it is returned as a question for the plan and the write
+  goes through (proposals 0040 and 0041).
 - **Snapshot** the file before the first write of a host session.
 - **Provenance.** Undo entries and the change journal record the client
   (window, MCP agent id): "Added shot 10B (via MCP)".
@@ -257,7 +262,8 @@ Done on branch `fileio`:
     can elicit, the person is asked directly as well;
   - the host adds the **integrity gate** (the write runs in one outer
     transaction whose inner transactions are savepoints; any new
-    finding, by identity, rolls it all back), a **snapshot** before an
+    blocking finding, by identity, rolls it all back), a **snapshot**
+    before an
     agent's write (once per ten minutes per film, last ten kept) and a
     **journal** of who made every write (`journal`, `recent_changes`; the
     editor shows "edited by …");

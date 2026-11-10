@@ -198,7 +198,7 @@ const cases = read("../../fixtures/negative/CASES.json") as {
 describe("the published negative-fixture recipes", () => {
   test("cover every case", () => {
     expect(cases.caseCount).toBe(cases.cases.length);
-    expect(cases.caseCount).toBe(18);
+    expect(cases.caseCount).toBe(19);
   });
 
   test("each case carries statements a third party could replay", () => {

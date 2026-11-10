@@ -38,6 +38,7 @@ function media(over: unknown[] = [], anchors: unknown[] = [],
     base_assets: base as ResolvedMedia["base_assets"],
     assets_most_specific_first: [] as ResolvedMedia[
       "assets_most_specific_first"],
+    stands_in_for: new Map(),
     binding_verdicts: [],
     trail: [],
   };

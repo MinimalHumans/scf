@@ -1,6 +1,6 @@
 {
   "query": "Q13",
-  "resultFormat": "1.0",
+  "resultFormat": "1.1",
   "schemaVersion": "2.25",
   "parameters": {
     "subjectType": "character",
@@ -57,7 +57,9 @@
         "provenance": "anchor",
         "state": "unaddressed",
         "detail": "no root named @project is configured in this session",
-        "sizeBytes": null
+        "sizeBytes": null,
+        "lifecycleStatus": "active",
+        "supersedes": null
       },
       {
         "uuid": "4116dcba-af7a-4a7d-a29e-51268203694f",
@@ -70,7 +72,9 @@
         "provenance": "bundle",
         "state": "unaddressed",
         "detail": "no root named @project is configured in this session",
-        "sizeBytes": null
+        "sizeBytes": null,
+        "lifecycleStatus": "active",
+        "supersedes": null
       },
       {
         "uuid": "2489457c-54c5-4525-9568-7bbd3cf631f8",
@@ -83,7 +87,9 @@
         "provenance": "bundle",
         "state": "unaddressed",
         "detail": "no root named @project is configured in this session",
-        "sizeBytes": null
+        "sizeBytes": null,
+        "lifecycleStatus": "active",
+        "supersedes": null
       },
       {
         "uuid": "e721a245-f8c5-40b0-b52f-f6c3767105c5",
@@ -96,7 +102,9 @@
         "provenance": "bundle",
         "state": "unaddressed",
         "detail": "no root named @project is configured in this session",
-        "sizeBytes": null
+        "sizeBytes": null,
+        "lifecycleStatus": "active",
+        "supersedes": null
       },
       {
         "uuid": "f9dfae2d-2cc7-42af-b2ac-d9089025a444",
@@ -109,7 +117,9 @@
         "provenance": "bundle",
         "state": "unaddressed",
         "detail": "no root named @project is configured in this session",
-        "sizeBytes": null
+        "sizeBytes": null,
+        "lifecycleStatus": "active",
+        "supersedes": null
       },
       {
         "uuid": "5ff2fb8f-be4b-4114-b0d0-1d16820d0ac5",
@@ -122,7 +132,9 @@
         "provenance": "bundle",
         "state": "unaddressed",
         "detail": "no root named @project is configured in this session",
-        "sizeBytes": null
+        "sizeBytes": null,
+        "lifecycleStatus": "active",
+        "supersedes": null
       }
     ],
     "counts": {

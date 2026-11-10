@@ -81,9 +81,14 @@ export interface Plan extends Draft {
   film: string;
   /** The revision this plan was made at, and will be applied at. */
   basedOn: number;
-  /** Integrity findings the host says this write would add. */
-  integrity: { wouldAdd: string[] };
-  /** True when applying would be refused (it would add findings). */
+  /**
+   * `wouldAdd`: blocking findings the host says this write would add.
+   * `noted`: questions it raises without being refused — a scene link for
+   * someone with no cue there, which is often right (spec §2.4.1).
+   */
+  integrity: { wouldAdd: string[]; noted: string[] };
+  /** True when applying would be refused (it would add blocking
+   *  findings). A noted question never sets it. */
   blocked: boolean;
   destructive: boolean;
   planId: string;
@@ -243,8 +248,8 @@ function explain(e: unknown): Error {
     case "integrity_gate":
       return new Error(
         `Refused: ${e.message}. Nothing was written. Fix the cause (for ` +
-        "instance by also adding the script line the link needs) and plan " +
-        "again.");
+        "instance by pointing the reference at a row that exists) and " +
+        "plan again.");
     case "external_change":
       return new Error(
         "The file was changed by another program while it was open, so " +
@@ -277,6 +282,7 @@ async function requireCurrentSchema(p: OpenProject): Promise<void> {
 async function makePlan(
     p: OpenProject, tool: string, draft: Draft): Promise<Plan> {
   let wouldAdd: string[] = [];
+  let noted: string[] = [];
   let destructive = false;
   if (draft.op !== null) {
     // Validated here, as the host would, so a bad argument is a plan-time
@@ -289,6 +295,7 @@ async function makePlan(
       dryRun: true, expectedRevision: p.revision,
     }).catch((e: unknown) => { throw explain(e); });
     wouldAdd = (dry.dryRun?.added ?? []).map((f) => f.description).sort();
+    noted = (dry.dryRun?.noted ?? []).map((f) => f.description).sort();
   }
   const risks = [...draft.risks];
   if (destructive) {
@@ -298,9 +305,18 @@ async function makePlan(
   if (wouldAdd.length > 0) {
     risks.push(`Would add integrity findings: ${wouldAdd.join("; ")}`);
   }
+  if (noted.length > 0) {
+    // One line however many there are: a pass that links a silent
+    // character to thirty scenes should not bury the other risks.
+    risks.push(
+      "Linked without a cue in the script. That is right for someone " +
+      "present and silent, and wrong for someone who is not there; " +
+      `confirm which: ${noted.join("; ")}`);
+  }
   const base: Omit<Plan, "planId"> = {
     ...draft, risks, tool, film: p.scfPath, basedOn: p.revision,
-    integrity: { wouldAdd }, blocked: wouldAdd.length > 0, destructive,
+    integrity: { wouldAdd, noted }, blocked: wouldAdd.length > 0,
+    destructive,
   };
   return { ...base, planId: await planIdOf(base) };
 }

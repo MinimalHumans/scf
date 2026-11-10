@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | draft |
+| **Status** | **implemented** — spec Unreleased (the candidate after 1.0-rc.7), `resultFormat` 1.1; schema 2.25 unchanged. The published fixture does not yet exercise it. See Resolution |
 | **Author** | Drafted with Claude, from production use on a short film |
 | **Opened** | 2026-11-10 |
 | **Affects** | §12.8 (Q13) and everything that reads it (Q14's media, `shot_media`); §6.6 gains a sentence; Q13 `resultFormat`; published `Q13-*` results; the conformance fixture |
@@ -139,4 +139,48 @@ having to rediscover them.
 
 ## Resolution
 
-*Left empty until the proposal is accepted, declined or deferred.*
+**Accepted and implemented, 2026-11-10**, as proposed, in the
+Unreleased section of `spec/CHANGELOG.md` (the candidate after
+1.0-rc.7). No registry change; schema stays 2.25. `resultFormat` moves
+to `1.1` and every published result is re-blessed.
+
+Both items are in: §12.8 substitutes the successor
+(`scf-core/src/resolution.ts`, `successorInForce`), and every reference
+carries `lifecycleStatus` and `supersedes`. §6.6 has its sentence. Q14's
+media, Q02's `media` and the MCP's `shot_media` follow, because they
+read Q13.
+
+**One difference from the draft's wording.** The draft said to follow
+`superseded_by_id` "until a row already visited". A chain that returns
+to a row it has visited has no last asset, so on a cycle the reference
+stays as it is, the same as for a missing successor or a pointer to a
+row that is not in the file. Each already has an `identity.*` code.
+§12.8 says so.
+
+**What is not done: the fixture.** "What it breaks" asked for a bound
+asset that is `superseded` with a successor, and a second whose
+successor is already carried. The fixture was left alone:
+`kitchen_night_plate_v1` is still `active` and unbound, so every
+published `supersedes` is null, and an implementation that ignores the
+rule reproduces every published result. The rule is pinned by
+`scf-core/test/supersededGivesWay.test.ts`, which supersedes assets on
+a copy of the fixture: both cases the draft asked for, a two-step
+chain, an anchor's asset, a cut successor, no successor, a dangling
+pointer, a cycle, and the three statuses that stay in force.
+`stability.md` records the row as Provisional and only partly
+exercised. Binding v1 would also remove the fixture's deliberate
+`asset.orphan` finding, which is a decision about the fixture and not
+about this rule.
+
+The open questions, as settled:
+
+- **Key on `lifecycle_status`**, as drafted. An `active` row with a
+  successor is left as it is, which is what the fixture's v1 is. No new
+  finding for that state.
+- **`archived` stays in force**, labelled by `lifecycleStatus`. Whether
+  Q13 should drop it is still open.
+- **The replaced asset is not in `trail`.** `supersedes` carries it on
+  the reference.
+- **Neither existing code weighs more.** A chain with no
+  `superseded_at`, or a successor with no `parent_id`, substitutes the
+  same way.

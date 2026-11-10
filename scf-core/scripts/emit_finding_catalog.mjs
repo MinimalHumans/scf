@@ -43,7 +43,7 @@ const doc = {
     "take its severity from here, not from the point the finding is " +
     "raised. Codes are a closed set: adding one is a change to the " +
     "specification.",
-  catalogVersion: "1.0",
+  catalogVersion: "1.1",
   specSection: "§9.4",
   schemaVersion,
   reportFormat: REPORT_FORMAT_VERSION,

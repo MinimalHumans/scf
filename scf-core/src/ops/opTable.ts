@@ -31,7 +31,7 @@ import {
   addBeat, addShot, moveShotInScene, removeBeat, removeShot, setShotCut,
 } from "./shootOps.ts";
 import {
-  dryRunThroughGate, withIntegrityGate, type GateFinding,
+  dryRunThroughGate, withIntegrityGate, type GateFinding, type GateNote,
 } from "./integrityGate.ts";
 import { setTitleKey } from "./titlePageOps.ts";
 
@@ -338,8 +338,8 @@ export interface CallOptions {
    */
   expectedRevision?: number;
   /**
-   * Refuse (and roll back) a write that adds an integrity finding the
-   * file did not already have. For callers with no person watching.
+   * Refuse (and roll back) a write that adds a blocking integrity
+   * finding the file did not already have. For callers with no person watching.
    */
   integrityGate?: boolean;
   /**
@@ -354,8 +354,9 @@ export interface OpResult {
   result: unknown;
   /** The session's revision after the write. */
   revision: number;
-  /** For a dry run: the integrity findings the write would add. */
-  dryRun?: { added: GateFinding[] };
+  /** For a dry run: the blocking findings the write would add, and the
+   *  questions it would raise without being refused (`noted`). */
+  dryRun?: { added: GateFinding[]; noted: GateNote[] };
 }
 
 /**
@@ -376,7 +377,7 @@ export async function callOp(
         ...(options.expectedRevision === undefined
           ? {} : { expectedRevision: options.expectedRevision }) });
     return { result: dry.result ?? null, revision: session.revision,
-             dryRun: { added: dry.added } };
+             dryRun: { added: dry.added, noted: dry.noted } };
   }
   const result = await session.write(
     (ctx) => options.integrityGate === true

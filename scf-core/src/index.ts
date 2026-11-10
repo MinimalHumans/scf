@@ -75,9 +75,12 @@ export type {
   ScreenplayRow, TitlePageRow,
 } from "./screenplay/rowModel.ts";
 export {
-  type GateFinding, IntegrityGateError, currentFindings, dryRunThroughGate,
-  withIntegrityGate,
+  type GateFinding, type GateNote, IntegrityGateError, currentFindings,
+  currentNotes, dryRunThroughGate, withIntegrityGate,
 } from "./ops/integrityGate.ts";
+export {
+  type DanglingReference, danglingReferences,
+} from "./references.ts";
 export { rowLabel } from "./displayName.ts";
 export type { PreviewKind } from "./preview.ts";
 
@@ -198,7 +201,7 @@ export {
 } from "./queryResult.ts";
 
 export {
-  type DossierComposition, type DossierGroup,
+  type DossierComposition, type DossierGroup, type DossierRelationship,
   type Q00Result, type Q01Result, type Q02Result, type Q03Composition,
   type Q03Result, type Q04Result, type Q05Result, type Q07Layer,
   type Q07Result, type Q09Result, type Q10Result, type Q11Result,

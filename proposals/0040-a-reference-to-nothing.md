@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | draft |
+| **Status** | **implemented** — spec Unreleased (the candidate after 1.0-rc.7), catalog 1.1; schema 2.25 unchanged. See Resolution |
 | **Author** | Drafted with Claude, from production use on a short film |
 | **Opened** | 2026-11-10 |
 | **Affects** | §9.4.1 (new code `reference.dangling`); `finding-catalog.json` (`codeCount` 54 → 55, `catalogVersion`); §9.1's paragraph on required references; §12.1.2's "not a finding" clause. Code: `scf-core` (`scanIntegrity`, `ops/integrityGate.ts`). Related: [0041](0041-silent-presence-and-dossier-relationships.md) |
@@ -163,4 +163,39 @@ proposal.
 
 ## Resolution
 
-*Left empty until the proposal is accepted, declined or deferred.*
+**Accepted and implemented, 2026-11-10**, as proposed, in the
+Unreleased section of `spec/CHANGELOG.md` (the candidate after
+1.0-rc.7). No registry change; schema stays 2.25.
+
+- **The code.** `reference.dangling`, `warning`, in
+  `spec/finding-catalog.json` (catalog version 1.1, 55 codes) and
+  §9.4.1, with the sentence in §9.1 and the replacement wording in
+  §12.1.2. One scan (`scf-core/src/references.ts`) serves the reporter
+  and the gate.
+- **The gate.** `GateFinding.kind` gains `"dangling_reference"`, which
+  blocks. The key is the table, row, column and value, so re-pointing a
+  dangling reference at another row that is not there is a new finding.
+  This is the interim kind the draft described; it goes when the gate
+  is rewired onto §9.4.
+- **The negative fixture.** `reference-dangling`, the nineteenth case:
+  an ordinary reference, a polymorphic one, and a uuid stored as text
+  in an integer column. It reports three `reference.dangling` findings,
+  one per column, and nothing else.
+- **Published reports.** `hollow_creek.report.json` is unchanged, as
+  the draft predicted.
+
+**The gate tests changed their example.** They used a silent scene
+link as the refused write. 0041 stopped that from blocking, so they now
+use a link to a character row that does not exist.
+
+The open questions, as settled:
+
+- **A polymorphic sibling naming no entity is not covered.** It is
+  still reported by nothing, and `stability.md` says so. A misspelt
+  `entity_type` is a sibling problem and wants its own code.
+- **The finding does not name the target.** The message says which
+  column; `rowIds` gives the rows. No report-format change. The gate's
+  description, which is per row, does name the target table and the
+  value.
+- **Optional references are covered**, as drafted. No column was found
+  where that is too strict.

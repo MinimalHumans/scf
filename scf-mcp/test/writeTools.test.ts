@@ -231,20 +231,49 @@ describe("the write tools", () => {
       { entityType: "character", label: "NO CUE HERE" })).json as
       Array<{ uuid: string }>)[0]!.uuid;
 
+    // A link to a character row that does not exist points at nothing
+    // (`reference.dangling`, spec §9.4.1). A row id is accepted as given,
+    // so this is the gate's to catch.
     const args = { entityType: "scene_character",
-      values: { scene_id: SCENE12, character_id: who } };
+      values: { scene_id: SCENE12, character_id: 9001 } };
     const plan = await call("create_row", args);
     expect(plan.plan.plan.blocked).toBe(true);
-    expect(plan.plan.plan.risks.join(" ")).toContain("NO CUE HERE");
+    expect(plan.plan.plan.risks.join(" ")).toContain("names no character");
     expect(plan.plan.next).toContain("refused");
 
     const forced = await call("create_row",
       { ...args, confirm: plan.plan.plan.planId });
     expect(forced.isError).toBe(true);
-    // Nothing points at the new character: the refused link was not made.
+    // Nothing points at the new character: no link was made.
     const used = (await callTool(server, "where_used",
       { entityType: "character", uuid: who })).json as { usedBy: unknown[] };
     expect(used.usedBy).toEqual([]);
+  }, 240_000);
+
+  test("someone present and silent can be linked: the plan asks, and " +
+      "does not refuse", async () => {
+    const made = await call("create_row",
+      { entityType: "character", values: { name: "SILENT WITNESS" } });
+    await call("create_row", { entityType: "character",
+      values: { name: "SILENT WITNESS" }, confirm: made.plan.plan.planId });
+    const who = ((await callTool(server, "find",
+      { entityType: "character", label: "SILENT WITNESS" })).json as
+      Array<{ uuid: string }>)[0]!.uuid;
+
+    const args = { entityType: "scene_character",
+      values: { scene_id: SCENE12, character_id: who } };
+    const plan = await call("create_row", args);
+    expect(plan.plan.plan.blocked).toBe(false);
+    expect(plan.plan.plan.risks.join(" ")).toContain("SILENT WITNESS");
+    expect(plan.plan.plan.risks.join(" ")).toContain("without a cue");
+
+    const applied = await call("create_row",
+      { ...args, confirm: plan.plan.plan.planId });
+    expect(applied.isError).toBe(false);
+    expect(applied.plan.status).toBe("applied");
+    const used = (await callTool(server, "where_used",
+      { entityType: "character", uuid: who })).json as { usedBy: unknown[] };
+    expect(used.usedBy).toHaveLength(1);
   }, 240_000);
 
   test("shots: add, move, cut and restore, each as a plan first",

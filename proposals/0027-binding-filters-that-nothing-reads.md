@@ -165,3 +165,7 @@ is answering a question nobody asked.
 schema 2.20 with [0033](0033-variants-in-force.md), which states which
 variant is in force (§4.8) — the rule point 1 said they were waiting
 for. All three binding tables now carry one.
+
+**Later still:** the reference-integrity gap noted above — a reference
+that names no row is reported by nothing — is drafted as
+[0040](0040-a-reference-to-nothing.md). It is not yet resolved.

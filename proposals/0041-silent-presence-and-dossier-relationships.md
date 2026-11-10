@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Status** | draft |
+| **Status** | **implemented** — spec Unreleased (the candidate after 1.0-rc.7), `resultFormat` 1.1; schema 2.25 unchanged. See Resolution |
 | **Author** | Found in the alexisNexus parsing pass (2026-11-04); drafted with Claude |
 | **Opened** | 2026-11-09 |
 | **Affects** | §2.4.1, §12.15, §12.16, §6.5 (pointer only); `stability.md` (§12.15 row); seven published results (`Q01`, the six `Q02-*`); `query-reference.md`, `SHA256SUMS`, `CHANGELOG.md`. Code: `scf-core` (integrity gate, dossier, markdown), `scf-host` (dry-run payload), `scf-mcp` (plan risks, polymorphic translation), `scf-app` (dossier view) |
@@ -14,8 +14,8 @@ together with its tooling halves E1, M2 and M3; **F2**; and **M1**. It
 deliberately does **not** answer **F1**, for reasons given under
 Alternatives.
 
-> **Related, 2026-11-10.** C1 below is already written in the working
-> tree (`scf-mcp/src/writeTools.ts`, with a test in
+> **Related, 2026-11-10.** C1 below has landed (commit `201075f`:
+> `scf-mcp/src/writeTools.ts`, with a test in
 > `scf-mcp/test/writeTools.test.ts`), after the same defect broke an
 > `asset_relationship.entity_id` link on another film. F1 is now drafted
 > on its own as [0040](0040-a-reference-to-nothing.md).
@@ -300,4 +300,53 @@ omitting what §6.5 says every consumer must read.
 
 ## Resolution
 
-*Left empty until the proposal is accepted, declined or deferred.*
+**Accepted and implemented, 2026-11-10**, in the Unreleased section
+of `spec/CHANGELOG.md` (the candidate after 1.0-rc.7). No registry
+change, no schema change, no fixture row change.
+
+- **A, silent presence.** §2.4.1 has the paragraph (A1). The gate
+  returns unjustified links as `noted`, beside `added`, and no longer
+  blocks on them (A2). The host's dry run carries `noted`, and the MCP
+  plan lists it under `risks` without setting `blocked` (A3). The editor
+  is unchanged (A4).
+- **B, relationships.** Q01 has `relationships` (§12.15), §12.16 and
+  §6.5 have their sentences, and the dossier's markdown and the
+  editor's dossier view show them. The seven published results came out
+  as B7 predicted: three entries for Eleanor on side `"a"`, two for
+  Marcus with one on each side, and `[]` for the four non-character
+  cases. `api-surface.json` was regenerated; `query-reference.md` and
+  `selectors.json` did not change.
+- **C, polymorphic references through the MCP.** Landed earlier, in
+  commit `201075f`.
+
+**`resultFormat` is `1.1`.** The draft did not ask for a bump. 0039
+added members to Q13's references in the same change, and one bump
+covers both.
+
+**The gate tests' example changed twice over.** With
+[0040](0040-a-reference-to-nothing.md) implemented alongside, the
+refused write in `opTable.test.ts`, `agent.test.ts` and
+`writeTools.test.ts` is a reference to a row that does not exist, not
+an orphaned line anchor. Each also asserts that a silent link is
+applied and reported as a note.
+
+**F1 is no longer deferred.** It is 0040, implemented in the same
+change, so the "known gap" this proposal asked to be recorded is
+closed except for a polymorphic sibling that names no entity
+(`stability.md`). Rewiring the gate onto §9.4 is still a later
+proposal.
+
+**Not done here.** Re-running `ops_D.json` on alexisNexus
+(implementation step 2) is work on that film, not on this repository.
+
+The open questions, as settled or left:
+
+1. **Editor noise** after the 94 links land: not addressed. Both
+   follow-ups stand.
+2. **Fixture coverage for B2's edge cases**: the fixture is unchanged.
+   The cut, absent and self-pair rules are pinned by
+   `scf-core/test/dossierRelationships.test.ts` on a copy of the
+   fixture, and by no published result.
+3. **`actor_character_role`** is still absent from the dossier. Open.
+4. **The plan risk text** is one line however many links are noted, so
+   it cannot bury the other risks.

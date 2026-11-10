@@ -140,8 +140,10 @@ possible by sorting within a type.
 
 ## Resolution
 
-**Implemented 2026-10-09**, as spec 0.64 on schema 2.23, ahead of
-formal acceptance, as 0036 was. Schema 2.23 was tagged and pushed with
+**Implemented 2026-10-09, accepted 2026-11-10**, as spec 0.64 on
+schema 2.23. It was built ahead of formal acceptance, as 0036 was; the
+acceptance was recorded in the 2026-11-10 pass over this directory.
+Schema 2.23 was tagged and pushed with
 it on 2026-10-12 (`schema-2.23`), which is why the release batch that
 followed is 2.24. Shot 12-04's storyboard panels exercise it in the
 fixture, their `order` running against their row ids.

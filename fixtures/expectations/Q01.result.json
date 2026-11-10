@@ -1,6 +1,6 @@
 {
   "query": "Q01",
-  "resultFormat": "1.0",
+  "resultFormat": "1.1",
   "schemaVersion": "2.25",
   "parameters": {
     "subjectType": "character",
@@ -277,6 +277,118 @@
           "subtlety_level": "clear",
           "theme_uuid": "5a2a0ae1-097e-4273-a50e-b4843904e55d"
         }
+      }
+    ],
+    "relationships": [
+      {
+        "relationship": {
+          "uuid": "59905336-6c9a-4cc5-9349-3950aa91703c",
+          "fields": {
+            "character_a_uuid": "1afb7bf0-8cee-4e2f-9e8e-015f9b2aaf64",
+            "character_b_uuid": "145417ca-e8e5-4946-aba0-e83575dad182",
+            "directionality": "mutual",
+            "emotional_valence": "complex",
+            "eye_contact_pattern": "She looks away first.",
+            "lifecycle_status": "active",
+            "name": "Eleanor - Marcus",
+            "physical_evolution": "Arm's length -> post-accident thaw (sc 10) -> ruptured by the truth (sc 19) -> the embrace at the door (sc 24).",
+            "power_dynamic": "Power held by silence.",
+            "relationship_type": "family",
+            "touch_comfort": "reserved"
+          }
+        },
+        "other": {
+          "uuid": "145417ca-e8e5-4946-aba0-e83575dad182",
+          "fields": {
+            "age": "34",
+            "arc_description": "From a man performing ease to a man who says the true sentence and survives the silence after it.",
+            "archetype": "the returning prodigal",
+            "backstory": "Was at the creek the day Ada drowned and has never told anyone. Left within the month; sent money, never letters.",
+            "casting_status": "tbd",
+            "core_belief": "A debt can be worked off if you work hard enough.",
+            "external_goal": "Winter over at the homestead and mend what he can.",
+            "flaw": "Confesses only when cornered, then calls it honesty.",
+            "gender": "male",
+            "greatest_fear": "That his mother already knows.",
+            "internal_goal": "Absolution he cannot ask for directly.",
+            "lifecycle_status": "active",
+            "motivation": "To be told he is not what he believes he is.",
+            "name": "Marcus Cade",
+            "occupation": "Railroad surveyor",
+            "pronouns": "he/him",
+            "role": "deuteragonist",
+            "summary": "Thirty-four, back after seven years without warning. Carries his sister's locket and the reason he left."
+          }
+        },
+        "side": "a"
+      },
+      {
+        "relationship": {
+          "uuid": "c9c5ae1a-8d04-463e-b148-755dccb80953",
+          "fields": {
+            "character_a_uuid": "1afb7bf0-8cee-4e2f-9e8e-015f9b2aaf64",
+            "character_b_uuid": "7cceb35d-fced-485b-ad73-8d73a9b2e41e",
+            "current_status": "Unspoken. Eleanor keeps her chair at the table.",
+            "directionality": "a_to_b",
+            "emotional_valence": "complex",
+            "history": "Nineteen years, ended at the creek.",
+            "lifecycle_status": "active",
+            "name": "Eleanor & Ada",
+            "power_dynamic": "none — memory only",
+            "relationship_type": "family",
+            "specific_relationship": "mother and daughter"
+          }
+        },
+        "other": {
+          "uuid": "7cceb35d-fced-485b-ad73-8d73a9b2e41e",
+          "fields": {
+            "age": "19 at her death",
+            "archetype": "the absent daughter",
+            "casting_status": "tbd",
+            "core_belief": "Never appears on screen; every design decision about her is an absence decision.",
+            "gender": "female",
+            "lifecycle_status": "active",
+            "name": "Ada Cade",
+            "pronouns": "she/her",
+            "role": "minor",
+            "summary": "Drowned at the creek crossing seven years before the story opens. Present in the film only as objects: a shawl, a locket, a chime by the door."
+          }
+        },
+        "side": "a"
+      },
+      {
+        "relationship": {
+          "uuid": "8df71d57-8088-4d03-83fa-0f0226624163",
+          "fields": {
+            "character_a_uuid": "1afb7bf0-8cee-4e2f-9e8e-015f9b2aaf64",
+            "character_b_uuid": "0f91a8cf-014f-4705-b7e9-b2a502c0aef1",
+            "current_status": "He calls; she is always busy.",
+            "directionality": "mutual",
+            "emotional_valence": "neutral",
+            "lifecycle_status": "active",
+            "name": "Eleanor & Shaw",
+            "relationship_type": "colleague",
+            "specific_relationship": "parishioner and minister, lapsed"
+          }
+        },
+        "other": {
+          "uuid": "0f91a8cf-014f-4705-b7e9-b2a502c0aef1",
+          "fields": {
+            "age": "58",
+            "archetype": "the well-meaning bystander",
+            "casting_status": "tbd",
+            "flaw": "Comfort delivered as instruction.",
+            "gender": "male",
+            "lifecycle_status": "active",
+            "motivation": "To get Eleanor back into the congregation.",
+            "name": "Reverend Shaw",
+            "occupation": "Minister, Hollow Creek church",
+            "pronouns": "he/him",
+            "role": "supporting",
+            "summary": "Buried Ada. Believes grief is a thing you can be walked through on a schedule."
+          }
+        },
+        "side": "a"
       }
     ]
   }
