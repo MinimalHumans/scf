@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
@@ -32,7 +31,7 @@ pub struct ProbeResult {
 /// to "this isn't a media file"), or output that doesn't parse as JSON
 /// — never a panic.
 pub fn probe(ffprobe_path: &Path, file: &Path) -> Result<ProbeResult, String> {
-    let output = Command::new(ffprobe_path)
+    let output = crate::winproc::command(ffprobe_path)
         .args(["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams"])
         .arg(file)
         .output()

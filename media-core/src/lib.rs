@@ -27,6 +27,7 @@ mod still_convert;
 mod still_probe;
 mod validate;
 mod verdict;
+mod winproc;
 
 use serde::Serialize;
 use std::collections::HashMap;

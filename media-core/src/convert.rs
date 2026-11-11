@@ -8,7 +8,7 @@
 //! than the one reading its progress output.
 
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex};
 
 use crate::DerivedParams;
@@ -99,7 +99,7 @@ pub struct Spawned {
 }
 
 fn spawn(ffmpeg: &Path, args: &[String]) -> std::io::Result<Spawned> {
-    let mut child = Command::new(ffmpeg)
+    let mut child = crate::winproc::command(ffmpeg)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -160,6 +160,7 @@ pub fn wait_with_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[test]
     fn remux_copies_the_codec_and_only_rewraps_the_container() {

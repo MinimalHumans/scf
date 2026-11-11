@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
@@ -48,7 +47,7 @@ impl From<&StillProbeResult> for crate::ProbeResult {
 /// `oiiotool --info -v -a <file>`, parsed. `-a` covers every subimage
 /// of a true multi-part EXR, not just the first.
 pub fn probe_oiiotool(oiiotool_path: &Path, file: &Path) -> Result<StillProbeResult, String> {
-    let output = Command::new(oiiotool_path)
+    let output = crate::winproc::command(oiiotool_path)
         .args(["--info", "-v", "-a"])
         .arg(file)
         .output()
@@ -153,7 +152,7 @@ fn clean_quoted(s: &str) -> String {
 /// is read, matching this phase's "flatten to one image" scope for
 /// magick-backed formats.
 pub fn probe_magick(magick_path: &Path, file: &Path) -> Result<StillProbeResult, String> {
-    let output = Command::new(magick_path)
+    let output = crate::winproc::command(magick_path)
         .arg("identify")
         .arg(file)
         .output()
@@ -280,6 +279,7 @@ impl StillProbeCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     /// Real output captured from oiiotool 3.2.2 against a hand-built
     /// 7-channel EXR with channels named `beauty.{R,G,B}`,

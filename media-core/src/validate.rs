@@ -9,7 +9,6 @@
 
 use crate::{Binary, BackendStatus};
 use std::path::Path;
-use std::process::Command;
 
 pub fn validate(binary: Binary, path: &Path) -> BackendStatus {
     let id = binary.id().to_string();
@@ -67,7 +66,7 @@ fn detect_hw_encoders(binary: Binary, path: &Path) -> Vec<String> {
 /// `None` on a spawn failure — the caller treats that as "not usable",
 /// never panics or propagates the error.
 fn run(path: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new(path).args(args).output().ok()?;
+    let output = crate::winproc::command(path).args(args).output().ok()?;
     let out = String::from_utf8_lossy(&output.stdout).into_owned();
     if out.trim().is_empty() {
         Some(String::from_utf8_lossy(&output.stderr).into_owned())

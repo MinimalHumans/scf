@@ -6,7 +6,7 @@
 //! parsing (spec §6: "oiiotool/magick report start/finish only").
 
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex};
 
 use crate::still_probe::StillSelection;
@@ -79,7 +79,7 @@ pub struct SpawnedStill {
 }
 
 fn spawn(backend: &Path, args: &[String]) -> std::io::Result<SpawnedStill> {
-    let mut child = Command::new(backend)
+    let mut child = crate::winproc::command(backend)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -133,6 +133,7 @@ pub fn wait_still(child: Arc<Mutex<Child>>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     fn layer_selection(channels: &[&str]) -> StillSelection {
         StillSelection {
