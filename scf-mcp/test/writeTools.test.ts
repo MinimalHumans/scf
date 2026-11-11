@@ -24,6 +24,7 @@ interface PlanResult {
   status: string;
   plan: {
     planId: string; basedOn: number; blocked: boolean; destructive: boolean;
+    scope: "rows" | "film";
     summary: string; risks: string[]; op: { name: string } | null;
     changes: Array<{
       kind: string; uuid?: string; label: string;
@@ -135,23 +136,187 @@ describe("the write tools", () => {
       { changes: unknown[] }).changes).toEqual([]);
   }, 120_000);
 
-  test("a plan goes stale when the film moves, and is not applied",
-      async () => {
-    const args = { entityType: "character", uuid: ELEANOR,
+  test("two approved plans about different rows both apply, in turn " +
+       "(proposal 0043)", async () => {
+    const mine = { entityType: "character", uuid: ELEANOR,
                    values: { summary: "Mine." } };
-    const planned = await call("update_row", args);
-    // Someone else changes something before the plan is confirmed.
+    const theirs = { entityType: "character",
+                     values: { name: "INTERLOPER" } };
+    const a = await call("update_row", mine);
+    const b = await call("create_row", theirs);
+    expect(a.plan.plan.scope).toBe("rows");
+    // Both approved; the first applied moves the film's revision...
+    const first = await call("create_row",
+      { ...theirs, confirm: b.plan.plan.planId });
+    expect(first.plan.status).toBe("applied");
+    // ...and the second, about a row the first did not touch, still holds.
+    const second = await call("update_row",
+      { ...mine, confirm: a.plan.plan.planId });
+    expect(second.plan.status).toBe("applied");
+    const row = ((await callTool(server, "list", { entityType: "character" }))
+      .json as Array<{ uuid: string; fields: Record<string, unknown> }>)
+      .find((c) => c.uuid === ELEANOR)!;
+    expect(row.fields["summary"]).toBe("Mine.");
+    expect(await names()).toContain("INTERLOPER");
+  }, 180_000);
+
+  test("a plan whose row changed since it was made is not applied",
+      async () => {
+    const mine = { entityType: "character", uuid: ELEANOR,
+                   values: { summary: "Mine." } };
+    const planned = await call("update_row", mine);
+    // Someone else changes the same row, in a field the plan leaves alone.
+    const other = { entityType: "character", uuid: ELEANOR,
+                    values: { backstory: "Theirs." } };
+    const theirs = await call("update_row", other);
+    await call("update_row",
+      { ...other, confirm: theirs.plan.plan.planId });
+    const r = await call("update_row",
+      { ...mine, confirm: planned.plan.plan.planId });
+    expect(r.plan.status).toBe("plan_changed");
+    const row = ((await callTool(server, "list", { entityType: "character" }))
+      .json as Array<{ uuid: string; fields: Record<string, unknown> }>)
+      .find((c) => c.uuid === ELEANOR)!;
+    expect(row.fields["summary"]).not.toBe("Mine.");
+    expect(row.fields["backstory"]).toBe("Theirs.");
+  }, 180_000);
+
+  test("a film-scoped tool still goes stale when the film moves",
+      async () => {
+    const args = { key: "Author", value: "Someone" };
+    const planned = await call("set_title_page_key", args);
+    expect(planned.plan.plan.scope).toBe("film");
     const other = await call("create_row",
       { entityType: "character", values: { name: "INTERLOPER" } });
     await call("create_row", { entityType: "character",
       values: { name: "INTERLOPER" }, confirm: other.plan.plan.planId });
-    const r = await call("update_row",
+    const r = await call("set_title_page_key",
       { ...args, confirm: planned.plan.plan.planId });
     expect(r.plan.status).toBe("plan_changed");
-        const row = ((await callTool(server, "list", { entityType: "character" }))
-      .json as Array<{ uuid: string; fields: Record<string, unknown> }>)
-      .find((c) => c.uuid === ELEANOR)!;
-    expect(row.fields["summary"]).not.toBe("Mine.");
+  }, 180_000);
+
+  test("write_batch: assets, links to them by $ref and shot updates are " +
+       "one plan, one confirm, all or nothing", async () => {
+    const SHOT = SHOT1204;
+    const batch = { ops: [
+      { op: "create", entityType: "asset", ref: "f1",
+        values: { name: "1204_board.png", identifier: "@project/1204_board.png",
+                  tags: ["storyboard"] } },
+      { op: "create", entityType: "asset_relationship",
+        values: { asset_id: "$f1", entity_type: "shot", entity_id: SHOT,
+                  relationship_type: "storyboard" } },
+      { op: "create", entityType: "asset", ref: "f2",
+        uuid: "00000000-0000-4000-8000-0000000ba7c2",
+        values: { name: "1204_alt.png", identifier: "@project/1204_alt.png" } },
+      { op: "create", entityType: "asset_relationship",
+        values: { asset_id: "$f2", entity_type: "shot", entity_id: SHOT,
+                  relationship_type: "storyboard" } },
+      { op: "update", entityType: "shot", uuid: SHOT,
+        values: { description: "Boarded in a batch." } },
+    ] };
+    const planned = await call("write_batch", batch);
+    expect(planned.isError).toBe(false);
+    const plan = planned.plan.plan;
+    expect(plan.op?.name).toBe("record.batch");
+    expect(plan.changes.map((c) => c.kind))
+      .toEqual(["create", "create", "create", "create", "update"]);
+    expect(plan.destructive).toBe(false);
+    expect(plan.blocked).toBe(false);
+    // Staleness bookkeeping stays out of the response.
+    expect(plan).not.toHaveProperty("reads");
+    expect(plan).not.toHaveProperty("shown");
+    // The plan shows the reference as written, and only the changed
+    // field of the shot, not the whole row.
+    expect(plan.changes[1]!.fields).toContainEqual(
+      { field: "asset_id", to: "$f1" });
+    const shown = (plan.op as unknown as { args: { ops: Array<{
+      values?: Record<string, unknown> }> } }).args.ops;
+    expect(shown[4]!.values).toEqual({ description: "Boarded in a batch." });
+    const full = await call("write_batch", { ...batch, verbose: true });
+    expect(Object.keys((full.plan.plan.op as unknown as { args: { ops: Array<{
+      values: Record<string, unknown> }> } }).args.ops[4]!.values).length)
+      .toBeGreaterThan(1);
+    expect(full.plan.plan.planId).toBe(plan.planId);
+
+    const applied = await call("write_batch",
+      { ...batch, confirm: plan.planId });
+    expect(applied.plan.status).toBe("applied");
+    const made = applied.plan.result as Array<{
+      kind: string; ref?: string; uuid?: string }>;
+    expect(made.filter((m) => m.kind === "create")).toHaveLength(4);
+    expect(made[2]).toMatchObject(
+      { ref: "f2", uuid: "00000000-0000-4000-8000-0000000ba7c2" });
+    const links = ((await callTool(server, "where_used",
+      { entityType: "asset", uuid: made[0]!.uuid })).json as
+      { usedBy: unknown[] }).usedBy;
+    expect(links.length).toBeGreaterThan(0);
+    // One entry in the journal: the batch, not five writes.
+    const journal = (await callTool(server, "recent_changes")).json as {
+      changes: Array<{ name: string; ok: boolean }> };
+    expect(journal.changes).toEqual([expect.objectContaining(
+      { name: "record.batch", ok: true })]);
+  }, 180_000);
+
+  test("write_batch refuses a bad op while planning, and a failing op " +
+       "writes nothing", async () => {
+    for (const ops of [
+      // A $ref nothing earlier declares.
+      [{ op: "create", entityType: "asset_relationship",
+         values: { asset_id: "$nope", entity_type: "shot",
+                   entity_id: SHOT1204 } }],
+      // A $ref to the wrong kind of row.
+      [{ op: "create", entityType: "character", ref: "c",
+         values: { name: "X" } },
+       { op: "create", entityType: "asset_relationship",
+         values: { asset_id: "$c", entity_type: "shot",
+                   entity_id: SHOT1204 } }],
+      // The same row twice.
+      [{ op: "update", entityType: "character", uuid: ELEANOR,
+         values: { summary: "a" } },
+       { op: "delete", entityType: "character", uuid: ELEANOR }],
+      // A list field given a string.
+      [{ op: "create", entityType: "asset",
+         values: { name: "x.png", tags: "shot" } }],
+    ]) {
+      const r = await call("write_batch", { ops });
+      expect(r.isError, JSON.stringify(ops)).toBe(true);
+    }
+    const before = await names();
+    // A batch the integrity gate refuses as a whole: the character in op
+    // 1 is not created either.
+    const ops = [
+      { op: "create", entityType: "character", values: { name: "HALF" } },
+      { op: "create", entityType: "scene_character",
+        values: { scene_id: SCENE12, character_id: 9001 } },
+    ];
+    const planned = await call("write_batch", { ops });
+    expect(planned.plan.plan.blocked).toBe(true);
+    const r = await call("write_batch",
+      { ops, confirm: planned.plan.plan.planId });
+    expect(r.isError).toBe(true);
+    expect(await names()).toEqual(before);
+  }, 180_000);
+
+  test("a batch with a delete is destructive and says what points at it",
+      async () => {
+    const r = await call("write_batch", { ops: [
+      { op: "delete", entityType: "character", uuid: ELEANOR }] });
+    expect(r.plan.plan.destructive).toBe(true);
+    expect(r.plan.plan.risks.join(" ")).toMatch(/op 1 .*point at it/);
+  }, 120_000);
+
+  test("create_row keeps a uuid it is given, and refuses one in use",
+      async () => {
+    const uuid = "00000000-0000-4000-8000-00000000c0de";
+    const args = { entityType: "character", values: { name: "NAMED" }, uuid };
+    const planned = await call("create_row", args);
+    const done = await call("create_row",
+      { ...args, confirm: planned.plan.plan.planId });
+    expect(done.plan.status).toBe("applied");
+    expect((await callTool(server, "find",
+      { entityType: "character", label: "NAMED" })).text).toContain(uuid);
+    expect((await call("create_row", { entityType: "character",
+      values: { name: "AGAIN" }, uuid: ELEANOR })).isError).toBe(true);
   }, 180_000);
 
   test("bad requests are caught while planning, before anything runs",
@@ -361,6 +526,78 @@ describe("the write tools", () => {
       { entity_type: "character", entity_id: 1 });
   }, 180_000);
 
+  test("list and json values pass the transport and are stored as the " +
+       "registry says; the wrong shape is refused", async () => {
+    const valuesOf = (r: Awaited<ReturnType<typeof call>>) =>
+      (r.plan.plan.op as unknown as
+        { args: { values: Record<string, unknown> } }).args.values;
+
+    // A string_list takes an array, stored as its JSON text (§2.5).
+    const created = await call("create_row", { entityType: "asset",
+      values: { name: "probe.png", identifier: "@project/probe.png",
+                tags: ["shot", "1A"] } });
+    expect(created.isError).toBe(false);
+    expect(created.plan.status).toBe("planned");
+    expect(valuesOf(created)).toMatchObject({ tags: '["shot","1A"]' });
+
+    // A bare string where a list belongs, a list of non-strings, and a
+    // list in a single-value field are refused while planning.
+    for (const values of [
+      { name: "probe.png", tags: "shot" },
+      { name: "probe.png", tags: [1, 2] },
+      { name: "probe.png", description: ["not", "a", "paragraph"] },
+      { name: "probe.png", size_bytes: "big" },
+    ]) {
+      const r = await call("create_row", { entityType: "asset", values });
+      expect(r.isError, JSON.stringify(values)).toBe(true);
+    }
+
+    // update_row: an array replaces the list; the plan shows both.
+    const PLATE = "16961c0a-8df6-475c-80f5-6eb4abfc7137";
+    const retagged = await call("update_row", { entityType: "asset",
+      uuid: PLATE, values: { tags: ["location", "kitchen"] } });
+    expect(retagged.isError).toBe(false);
+    expect(retagged.plan.plan.changes[0]!.fields).toEqual([{
+      field: "tags", from: '["location","kitchen","night"]',
+      to: '["location","kitchen"]' }]);
+    const same = await call("update_row", { entityType: "asset",
+      uuid: PLATE, values: { tags: ["location", "kitchen", "night"] } });
+    expect(same.plan.plan.op).toBeNull();
+    expect((await call("update_row", { entityType: "asset", uuid: PLATE,
+      values: { tags: "night" } })).isError).toBe(true);
+
+    // A json field takes an array or object; a multiselect an array.
+    const DECISION = "0af0d54c-ff7e-4710-a9d9-ee3971cf1097";
+    const json = await call("update_row", { entityType: "creative_decision",
+      uuid: DECISION, values: { affected_entities: { scene: ["12"] } } });
+    expect(json.isError).toBe(false);
+    expect(valuesOf(json)).toMatchObject(
+      { affected_entities: '{"scene":["12"]}' });
+    const OVERRIDE = "5e52f62a-8e0d-4787-aee2-fd3a3a8e518c";
+    const multi = await call("update_row", { entityType:
+      "character_shot_override", uuid: OVERRIDE,
+      values: { override_types: ["aging", "prosthetic"] } });
+    expect(multi.isError).toBe(false);
+    expect(valuesOf(multi)).toMatchObject(
+      { override_types: "aging, prosthetic" });
+  }, 180_000);
+
+  test("the advertised schema for values admits what the tools accept",
+      async () => {
+    const listed = await server.send("tools/list") as {
+      tools: Array<{ name: string; inputSchema: {
+        properties: Record<string, { additionalProperties?: unknown }> } }>;
+    };
+    for (const name of ["create_row", "update_row"]) {
+      const tool = listed.tools.find((t) => t.name === name)!;
+      const value = JSON.stringify(
+        tool.inputSchema.properties["values"]!.additionalProperties);
+      expect(value, name).toContain('"array"');
+      expect(value, name).toContain('"object"');
+      expect(value, name).toContain('"string"');
+    }
+  });
+
   test("a film from an older schema is refused with a way forward",
       async () => {
     const old = join(dir, "old.scf");
@@ -389,7 +626,8 @@ describe("a read-only server", () => {
     const tools = ((await server.send("tools/list")) as
       { tools: Array<{ name: string }> }).tools.map((t) => t.name);
     for (const w of ["create_row", "update_row", "delete_row", "add_shot",
-                     "set_shot_cut", "move_shot", "set_title_page_key"]) {
+                     "set_shot_cut", "move_shot", "set_title_page_key",
+                     "write_batch"]) {
       expect(tools).not.toContain(w);
     }
     expect(tools).toContain("recent_changes");

@@ -26,7 +26,10 @@ import type { SqlValue } from "../db.ts";
 import type { Session } from "../session.ts";
 export { StaleRevisionError } from "../session.ts";
 import type { ScfContext } from "../resolution.ts";
-import { createRecord, deleteRecord, updateRecord } from "./recordOps.ts";
+import {
+  applyBatch, createRecord, deleteRecord, isBatchRef, updateRecord,
+  type BatchOp,
+} from "./recordOps.ts";
 import {
   addBeat, addShot, moveShotInScene, removeBeat, removeShot, setShotCut,
 } from "./shootOps.ts";
@@ -42,7 +45,9 @@ export type ArgType =
   | { kind: "string" }
   | { kind: "boolean" }
   | { kind: "ids" }
-  | { kind: "values" };
+  | { kind: "values" }
+  /** A list of record writes (proposal 0043); see `checkBatch`. */
+  | { kind: "batch" };
 
 export interface ArgSpec {
   type: ArgType;
@@ -112,7 +117,88 @@ function checkOne(name: string, spec: ArgSpec, v: unknown): unknown {
       }
       return v;
     }
+    case "batch":
+      return checkBatch(name, v);
   }
+}
+
+const UUID_SHAPE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A batch: a list of `{kind, entity, ...}`. A create takes `values` and
+ * optionally `ref` and `uuid`; an update `id` and `values`; a delete
+ * `id`. A value is a plain value or `{ $ref }`, naming a row an earlier
+ * create in the batch made. Unknown keys are refused, as at top level.
+ */
+function checkBatch(name: string, v: unknown): BatchOp[] {
+  if (!Array.isArray(v) || v.length === 0) {
+    throw new OpArgumentError(`${name}: expected a non-empty list of ops`);
+  }
+  const refs = new Set<string>();
+  return v.map((raw, i): BatchOp => {
+    const at = `${name}[${String(i)}]`;
+    const bad = (what: string): never => {
+      throw new OpArgumentError(`${at}: ${what}`);
+    };
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      return bad("expected an object");
+    }
+    const o = raw as Record<string, unknown>;
+    const allowed: Record<string, readonly string[]> = {
+      create: ["kind", "entity", "values", "ref", "uuid"],
+      update: ["kind", "entity", "id", "values"],
+      delete: ["kind", "entity", "id"],
+    };
+    const kind = o["kind"];
+    if (typeof kind !== "string" || !Object.hasOwn(allowed, kind)) {
+      return bad("kind: expected create, update or delete");
+    }
+    for (const key of Object.keys(o)) {
+      if (!allowed[kind]!.includes(key)) bad(`unknown key: ${key}`);
+    }
+    if (typeof o["entity"] !== "string") bad("entity: expected a string");
+    const entity = o["entity"] as string;
+    const values = (): Record<string, SqlValue | { $ref: string }> => {
+      const vs = o["values"];
+      if (typeof vs !== "object" || vs === null || Array.isArray(vs)) {
+        return bad("values: expected an object of field values");
+      }
+      for (const [k, x] of Object.entries(vs)) {
+        if (isBatchRef(x)) {
+          if (!refs.has(x.$ref)) {
+            bad(`values.${k}: "${x.$ref}" is not a ref an earlier ` +
+                "create in this batch declares");
+          }
+        } else if (x !== undefined && !isSqlValue(x)) {
+          bad(`values.${k}: expected a plain value or { $ref }`);
+        }
+      }
+      return vs as Record<string, SqlValue | { $ref: string }>;
+    };
+    if (kind === "create") {
+      const ref = o["ref"];
+      const uuid = o["uuid"];
+      if (ref !== undefined &&
+          (typeof ref !== "string" || ref === "" || refs.has(ref))) {
+        bad("ref: expected a name not already used in this batch");
+      }
+      if (uuid !== undefined &&
+          (typeof uuid !== "string" || !UUID_SHAPE.test(uuid))) {
+        bad("uuid: expected a uuid");
+      }
+      const vs = values();
+      if (typeof ref === "string") refs.add(ref);
+      return { kind, entity, values: vs,
+               ...(typeof ref === "string" ? { ref } : {}),
+               ...(typeof uuid === "string" ? { uuid } : {}) };
+    }
+    if (!Number.isInteger(o["id"])) bad("id: expected an integer");
+    const id = o["id"] as number;
+    return kind === "update"
+      ? { kind, entity, id, values: values() }
+      : { kind: "delete", entity, id };
+  });
 }
 
 /**
@@ -160,6 +246,22 @@ export function argsJsonSchema(op: OpDef): Record<string, unknown> {
           type: "object",
           additionalProperties: { type: ["string", "number", "null"] },
         };
+        case "batch": {
+          const value = { anyOf: [
+            { type: ["string", "number", "null"] },
+            { type: "object", properties: { $ref: { type: "string" } },
+              required: ["$ref"], additionalProperties: false },
+          ] };
+          return {
+            type: "array", minItems: 1,
+            items: { type: "object", properties: {
+              kind: { enum: ["create", "update", "delete"] },
+              entity: { type: "string" }, id: { type: "integer" },
+              ref: { type: "string" }, uuid: { type: "string" },
+              values: { type: "object", additionalProperties: value },
+            }, required: ["kind", "entity"], additionalProperties: false },
+          };
+        }
       }
     })();
     properties[key] = {
@@ -195,10 +297,34 @@ const OPS: readonly OpDef[] = [
       entity: ENTITY,
       values: { type: { kind: "values" },
                 description: "Field values; unknown fields are ignored." },
+      uuid: str("The new row's uuid, when the caller has one; otherwise " +
+                "a fresh one is stamped.", { optional: true }),
     },
-    run: (ctx, a) => createRecord(
-      ctx.exec, ctx.registry, a["entity"] as string,
-      a["values"] as Record<string, SqlValue>),
+    run: (ctx, a) => {
+      const uuid = a["uuid"] as string | undefined;
+      if (uuid !== undefined && !UUID_SHAPE.test(uuid)) {
+        throw new OpArgumentError("uuid: expected a uuid");
+      }
+      return createRecord(
+        ctx.exec, ctx.registry, a["entity"] as string,
+        a["values"] as Record<string, SqlValue>, uuid);
+    },
+  }),
+  define({
+    name: "record.batch",
+    summary: "Create, update and delete several rows in one transaction: " +
+             "all of them or none. A create may name its row (ref) for " +
+             "later ops to point at as { $ref }.",
+    // A batch may delete; whether this one does is the caller's to say.
+    destructive: true,
+    args: {
+      ops: { type: { kind: "batch" },
+             description: "The writes, in order. Each is {kind: create, " +
+               "entity, values, ref?, uuid?}, {kind: update, entity, id, " +
+               "values} (every field, as record.update) or {kind: delete, " +
+               "entity, id}." },
+    },
+    run: (ctx, a) => applyBatch(ctx.exec, ctx.registry, a["ops"] as BatchOp[]),
   }),
   define({
     name: "record.update",
