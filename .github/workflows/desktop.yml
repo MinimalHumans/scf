@@ -12,8 +12,9 @@
 #
 # Pushing a tag `editor-X.Y.Z` makes a real release instead: the tag
 # must sit on `main` and match scf-app/package.json, and the release
-# stays put, with the spec and schema tags the build descends from in
-# its notes. The rolling prerelease is left alone.
+# stays put, with scf-app/CHANGELOG.md's matching section (if any) and
+# the spec and schema tags the build descends from in its notes. The
+# rolling prerelease is left alone.
 
 name: Desktop
 
@@ -346,11 +347,24 @@ jobs:
           version=${GITHUB_REF_NAME#editor-}
           spec=$(git describe --tags --abbrev=0 --match 'spec-*' "$GITHUB_SHA" || echo none)
           schema=$(git describe --tags --abbrev=0 --match 'schema-*' "$GITHUB_SHA" || echo none)
+          # scf-app/CHANGELOG.md's "## $version" section, if it has one,
+          # goes above the build line; the heading itself is dropped.
+          notes=$(awk -v ver="$version" '
+            $0 == "## " ver { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' scf-app/CHANGELOG.md)
+          build_line="Windows (signed) and Linux (unsigned; see SHA256SUMS) builds of ${GITHUB_SHA::7}. Built against \`$spec\` and \`$schema\`."
+          if [ -n "$(echo "$notes" | tr -d '[:space:]')" ]; then
+            full_notes=$(printf '%s\n\n%s' "$notes" "$build_line")
+          else
+            full_notes="$build_line"
+          fi
           pre=()
           case "$version" in *-*) pre=(--prerelease) ;; esac
           gh release create "$GITHUB_REF_NAME" \
             "${pre[@]}" \
             --verify-tag \
             --title "SCF Editor $version" \
-            --notes "Windows (signed) and Linux (unsigned; see SHA256SUMS) builds of ${GITHUB_SHA::7}. Built against \`$spec\` and \`$schema\`." \
+            --notes "$full_notes" \
             dist/*
