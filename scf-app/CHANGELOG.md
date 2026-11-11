@@ -6,6 +6,12 @@ The editor ships on its own version line, separate from the spec
 desktop release workflow copies that section into the GitHub release
 notes.
 
+## 0.2.4
+
+Rebuild of 0.2.3 with a fix to the release workflow: the Linux build
+could hang indefinitely when the runner's apt mirror was unreachable, so
+0.2.3 never published. No changes to the app itself.
+
 ## 0.2.3
 
 - **Fixed:** the app could fail to start on a fresh machine with
