@@ -315,3 +315,98 @@ describe("the integrity gate", () => {
       { integrityGate: true });
   });
 });
+
+describe("record.batch (proposal 0043)", () => {
+  let session: Session;
+
+  beforeEach(async () => {
+    const registry = loadRegistry(JSON.parse(
+      await readFile(REGISTRY, "utf8")) as RegistryJson);
+    const db = openNodeDatabase(":memory:");
+    await initDatabase(db.exec, registry);
+    session = createSession(registry, {
+      exec: db.exec, persist: () => Promise.resolve(true),
+      close: () => Promise.resolve(),
+    });
+  });
+
+  const count = async (table: string): Promise<number> =>
+    Number((await session.exec(
+      `SELECT COUNT(*) AS n FROM ${table}`))[0]!["n"]);
+  const UUID = "00000000-0000-4000-8000-00000000a5e7";
+
+  test("creates, a $ref to one of them, an update and a delete, all at " +
+       "once and through the gate", async () => {
+    const gone = (await callOp(session, "record.create", {
+      entity: "character", values: { name: "GONE" } })).result as number;
+    const kept = (await callOp(session, "record.create", {
+      entity: "character", values: { name: "KEPT" } })).result as number;
+    const r = await callOp(session, "record.batch", { ops: [
+      { kind: "create", entity: "asset", ref: "a", uuid: UUID,
+        values: { name: "board.png", identifier: "@project/board.png" } },
+      { kind: "create", entity: "asset_relationship",
+        values: { asset_id: { $ref: "a" }, entity_type: "character",
+                  entity_id: kept, relationship_type: "reference" } },
+      { kind: "update", entity: "character", id: kept,
+        values: { name: "KEPT", description: "Updated in a batch." } },
+      { kind: "delete", entity: "character", id: gone },
+    ] }, { integrityGate: true });
+    const out = r.result as Array<Record<string, unknown>>;
+    expect(out.map((o) => o["kind"]))
+      .toEqual(["create", "create", "update", "delete"]);
+    expect(out[0]).toMatchObject({ ref: "a", uuid: UUID });
+    const link = await session.exec(
+      "SELECT asset_id FROM asset_relationship");
+    expect(link[0]!["asset_id"]).toBe(out[0]!["id"]);
+    expect(await count("character")).toBe(1);
+    expect(r.revision).toBe(3);                    // one write, not four
+  });
+
+  test("one failing op rolls back every op before it", async () => {
+    const err = await callOp(session, "record.batch", { ops: [
+      { kind: "create", entity: "character", values: { name: "FIRST" } },
+      { kind: "create", entity: "asset_relationship",
+        values: { asset_id: 9001, entity_type: "character",
+                  entity_id: 9002, relationship_type: "reference" } },
+    ] }, { integrityGate: true }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(IntegrityGateError);
+    expect(await count("character")).toBe(0);
+    // ...and the connection is free for the next write.
+    await callOp(session, "record.create", {
+      entity: "character", values: { name: "AFTER" } });
+    expect(await count("character")).toBe(1);
+  });
+
+  test("a dry run of a batch reports and keeps nothing", async () => {
+    const r = await callOp(session, "record.batch", { ops: [
+      { kind: "create", entity: "character", values: { name: "MAYBE" } },
+    ] }, { dryRun: true });
+    expect(r.dryRun?.added).toEqual([]);
+    expect(await count("character")).toBe(0);
+  });
+
+  test("malformed batches are refused before anything runs", async () => {
+    for (const ops of [
+      [],
+      [{ kind: "explode", entity: "character" }],
+      [{ kind: "create", entity: "character", values: {}, extra: 1 }],
+      [{ kind: "update", entity: "character", values: {} }],       // no id
+      [{ kind: "create", entity: "character",                      // undeclared
+         values: { name: { $ref: "later" } } }],
+      [{ kind: "create", entity: "character", ref: "x", values: {} },
+       { kind: "create", entity: "character", ref: "x", values: {} }],
+      [{ kind: "create", entity: "character", uuid: "nope", values: {} }],
+    ]) {
+      await expect(callOp(session, "record.batch", { ops }))
+        .rejects.toBeInstanceOf(OpArgumentError);
+    }
+    expect(session.revision).toBe(0);
+  });
+
+  test("record.create keeps a uuid it is given", async () => {
+    await callOp(session, "record.create", {
+      entity: "character", values: { name: "NAMED" }, uuid: UUID });
+    const row = await session.exec("SELECT uuid FROM character");
+    expect(row[0]!["uuid"]).toBe(UUID);
+  });
+});

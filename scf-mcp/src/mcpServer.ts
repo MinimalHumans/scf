@@ -138,7 +138,13 @@ export async function createScfMcpServer(
           "Show the plan to the person you are working with and wait for " +
           "their approval; then call the same tool again with `confirm` " +
           "set to the `planId`. It re-checks the film and applies only an " +
-          "unchanged plan. A change that would leave a reference " +
+          "unchanged plan. For create, update and delete, unchanged " +
+          "means the rows the plan reads and writes, so approved plans " +
+          "about different rows can be applied one after another. When " +
+          "a task makes several changes, use `write_batch`: one plan, " +
+          "one approval, applied all or nothing, and a create's `ref` " +
+          "lets later ops point at the new row as \"$ref\". " +
+          "A change that would leave a reference " +
           "pointing at nothing is refused. Linking someone to a scene " +
           "where the script gives them no cue is not refused: the plan " +
           "lists it under `risks` as a question, because a character can " +
