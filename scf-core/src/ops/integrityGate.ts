@@ -141,25 +141,28 @@ const addedTo = <F extends { key: string }>(
  * A connection whose transaction statements are savepoints. Everything
  * else passes straight through, so row ids, last_insert_rowid() and
  * reads inside the write all behave as on the real connection.
+ *
+ * `prefix` names the savepoints, so two of these stacked on one
+ * connection (a batch inside the gate) cannot release each other's.
  */
-function savepointExec(base: SqlExec): SqlExec {
+export function savepointExec(base: SqlExec, prefix = "gate"): SqlExec {
   let depth = 0;
   return async (sql, params) => {
     const s = sql.trim().replace(/;$/, "").toUpperCase();
     if (s === "BEGIN IMMEDIATE" || s === "BEGIN") {
       depth += 1;
-      return base(`SAVEPOINT gate_${String(depth)}`);
+      return base(`SAVEPOINT ${prefix}_${String(depth)}`);
     }
     if (s === "COMMIT") {
       const d = depth;
       depth -= 1;
-      return base(`RELEASE gate_${String(d)}`);
+      return base(`RELEASE ${prefix}_${String(d)}`);
     }
     if (s === "ROLLBACK") {
       const d = depth;
       depth -= 1;
-      await base(`ROLLBACK TO gate_${String(d)}`);
-      return base(`RELEASE gate_${String(d)}`);
+      await base(`ROLLBACK TO ${prefix}_${String(d)}`);
+      return base(`RELEASE ${prefix}_${String(d)}`);
     }
     return base(sql, params);
   };

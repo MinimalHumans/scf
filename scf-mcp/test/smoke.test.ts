@@ -40,7 +40,7 @@ describe("scf-mcp server — a default project set at startup", () => {
       "gallery", "list", "move_shot", "open", "readiness", "recent_changes",
       "recent_files", "set_root", "shot_list",
       "set_shot_cut", "set_title_page_key", "shot_context", "shot_media",
-      "shot_readiness", "update_row", "where_used",
+      "shot_readiness", "update_row", "where_used", "write_batch",
     ].sort());
   });
 
