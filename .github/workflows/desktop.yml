@@ -259,6 +259,22 @@ jobs:
 
       # Built on 22.04, not latest: an AppImage runs only where its
       # glibc is at least as new as the one it was built against.
+      # The image points apt at azure.archive.ubuntu.com. When that host
+      # does not resolve or answer, every apt fetch waits out its timeout
+      # and the job hangs, so fall back to the public archive.
+      - name: apt mirror fallback
+        timeout-minutes: 2
+        run: |
+          if curl -fsS -m 10 -o /dev/null http://azure.archive.ubuntu.com/ubuntu/dists/jammy/InRelease; then
+            echo "azure mirror reachable; leaving apt sources alone"
+          else
+            echo "azure mirror unreachable; switching apt to archive.ubuntu.com"
+            curl -fsS -m 10 -o /dev/null http://archive.ubuntu.com/ubuntu/dists/jammy/InRelease
+            sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|http://archive.ubuntu.com/ubuntu|' \
+              /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+            grep -rh "^deb\|^URIs" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null || true
+          fi
+
       - name: system libraries
         timeout-minutes: 10
         run: |
