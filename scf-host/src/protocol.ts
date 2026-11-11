@@ -60,6 +60,13 @@ export interface GateFindingInfo {
   description: string;
 }
 
+/** A question a write would raise without being refused (`GateNote`). */
+export interface GateNoteInfo {
+  kind: string;
+  key: string;
+  description: string;
+}
+
 export interface HostRequest {
   id: number;
   method: string;
@@ -131,8 +138,9 @@ export interface HostMethods {
        { result: unknown; revision: number;
          /** Set on the first write that took a snapshot of the file. */
          snapshot?: string;
-         /** For a dry run: the findings the write would add. */
-         dryRun?: { added: GateFindingInfo[] } }];
+         /** For a dry run: the blocking findings the write would add,
+          *  and the questions it would raise (`noted`). */
+         dryRun?: { added: GateFindingInfo[]; noted?: GateNoteInfo[] } }];
   /** Ask the host to exit. Refused while any other client is connected. */
   shutdown: [Record<string, never>, null];
   /** Recent writes to the open film, newest last, with who made them. */

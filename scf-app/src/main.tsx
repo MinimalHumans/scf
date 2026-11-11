@@ -28,6 +28,7 @@ import "./styles.css";
 if ("__TAURI_INTERNALS__" in window) {
   void import("./mcp/windowMcp.ts").then((m) => m.serveMcp());
   void import("./host/externalLinks.ts").then((m) => m.routeExternalLinks());
+  void import("./files/launchOpen.ts").then((m) => m.routeLaunchFile());
 }
 
 const rootEl = document.getElementById("root");

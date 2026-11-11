@@ -175,7 +175,8 @@ describe("the integrity gate", () => {
   });
 
   /** A scene with a heading and an action line, and one character who
-   *  has no cue there: linking them is an unjustified link. */
+   *  has no cue there: linking them is a silent presence, which is a
+   *  question and not a refusal (spec §2.4.1, proposal 0041). */
   async function scriptedScene(): Promise<{ scene: number; person: number }> {
     const scene = (await callOp(session, "record.create", {
       entity: "scene", values: { scene_number: "1" } })).result as number;
@@ -194,6 +195,9 @@ describe("the integrity gate", () => {
     entity: "scene_character",
     values: { scene_id: scene, character_id: person },
   });
+  /** No character has this id: a link to it points at nothing (§9.4.1,
+   *  `reference.dangling`), which is what the gate refuses. */
+  const NOBODY = 9001;
 
   test("without the gate the same write goes through", async () => {
     const { scene, person } = await scriptedScene();
@@ -205,11 +209,12 @@ describe("the integrity gate", () => {
   test("a write that adds a finding is refused and leaves nothing",
       async () => {
     const { scene, person } = await scriptedScene();
-    const err = await callOp(session, "record.create", link(scene, person),
+    void person;
+    const err = await callOp(session, "record.create", link(scene, NOBODY),
       { integrityGate: true }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(IntegrityGateError);
     expect((err as IntegrityGateError).added[0]!.kind)
-      .toBe("unjustified_link");
+      .toBe("dangling_reference");
     expect(await session.exec("SELECT id FROM scene_character")).toEqual([]);
     // The connection is usable afterwards, and not stuck in a transaction.
     await callOp(session, "record.create", {
@@ -219,8 +224,8 @@ describe("the integrity gate", () => {
 
   test("findings the file already had do not block an unrelated write",
       async () => {
-    const { scene, person } = await scriptedScene();
-    await callOp(session, "record.create", link(scene, person));
+    const { scene } = await scriptedScene();
+    await callOp(session, "record.create", link(scene, NOBODY));
     // The file now carries one finding. Adding a character is fine.
     const r = await callOp(session, "record.create", {
       entity: "character", values: { name: "MARCUS" } },
@@ -230,28 +235,66 @@ describe("the integrity gate", () => {
 
   test("a write that fixes one finding and makes another is refused",
       async () => {
-    const { scene, person } = await scriptedScene();
+    const { scene } = await scriptedScene();
     const made = (await callOp(session, "record.create",
-      link(scene, person))).result as number;
-    const other = (await callOp(session, "record.create", {
-      entity: "character", values: { name: "MARCUS" } })).result as number;
-    // Re-pointing the link at someone else keeps the total at one.
+      link(scene, NOBODY))).result as number;
+    // Re-pointing the link at another row that is not there keeps the
+    // total at one.
     await expect(callOp(session, "record.update", {
       entity: "scene_character", id: made,
-      values: { scene_id: scene, character_id: other } },
+      values: { scene_id: scene, character_id: NOBODY + 1 } },
       { integrityGate: true })).rejects.toBeInstanceOf(IntegrityGateError);
     const row = await session.exec(
       "SELECT character_id AS c FROM scene_character WHERE id = ?", [made]);
-    expect(row[0]!["c"]).toBe(person);
+    expect(row[0]!["c"]).toBe(NOBODY);
+  });
+
+  test("a silent presence link is applied through the gate, and a dry " +
+      "run notes it as a question", async () => {
+    const { scene, person } = await scriptedScene();
+    const dry = await callOp(session, "record.create", link(scene, person),
+      { dryRun: true });
+    expect(dry.dryRun!.added).toEqual([]);
+    expect(dry.dryRun!.noted.map((n) => n.kind)).toEqual(["unjustified_link"]);
+    expect(dry.dryRun!.noted[0]!.description).toContain("ELEANOR");
+    await callOp(session, "record.create", link(scene, person),
+      { integrityGate: true });
+    const n = await session.exec("SELECT COUNT(*) AS n FROM scene_character");
+    expect(n[0]!["n"]).toBe(1);
+  });
+
+  test("a polymorphic reference to nothing is refused, and one whose " +
+      "kind is unset is not the gate's business", async () => {
+    const theme = (await callOp(session, "record.create", {
+      entity: "theme", values: { name: "Guilt" } })).result as number;
+    const dangling = {
+      entity: "thematic_connection",
+      values: { theme_id: theme, entity_type: "character",
+                entity_id: NOBODY },
+    };
+    const err = await callOp(session, "record.create", dangling,
+      { integrityGate: true }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(IntegrityGateError);
+    expect((err as IntegrityGateError).added[0]!.description)
+      .toContain("entity_id names no character");
+    // A uuid stored as text in the integer column names no row either.
+    const asText = await callOp(session, "record.create", {
+      entity: "thematic_connection",
+      values: { theme_id: theme, entity_type: "character",
+                entity_id: "3f2b1c9e-0000-4000-8000-000000000001" } },
+      { integrityGate: true }).catch((e: unknown) => e);
+    expect(asText).toBeInstanceOf(IntegrityGateError);
+    expect(await session.exec("SELECT id FROM thematic_connection"))
+      .toEqual([]);
   });
 
   test("a dry run reports the finding, changes nothing, and keeps the " +
       "revision", async () => {
-    const { scene, person } = await scriptedScene();
+    const { scene } = await scriptedScene();
     const at = session.revision;
-    const r = await callOp(session, "record.create", link(scene, person),
+    const r = await callOp(session, "record.create", link(scene, NOBODY),
       { dryRun: true });
-    expect(r.dryRun!.added.map((f) => f.kind)).toEqual(["unjustified_link"]);
+    expect(r.dryRun!.added.map((f) => f.kind)).toEqual(["dangling_reference"]);
     expect(session.revision).toBe(at);
     expect(await session.exec("SELECT id FROM scene_character")).toEqual([]);
     // And a clean one reports nothing to add.

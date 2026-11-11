@@ -35,11 +35,18 @@ import { regionFits, type RegionBox } from "@scf-core/anchors.ts";
 import { fileAt, makeLocator } from "./assetLocator.ts";
 
 /**
- * Generated at twice the largest display size (88px), so one raster
- * serves all three sizes and still looks right on a HiDPI screen.
- * Square, because every place a thumbnail appears is a square slot.
+ * Generated at twice the largest slot size (88px), so one raster
+ * serves all three slot sizes and still looks right on a HiDPI screen.
+ * Square, because a slot is square.
  */
 const THUMB_PX = 176;
+
+/**
+ * For a cropped region shown in a TILE rather than a slot. A tile draws
+ * its picture up to 160 CSS pixels tall, which is 320 device pixels at
+ * 2x; the slot raster stretched to that is visibly soft.
+ */
+export const TILE_THUMB_PX = 352;
 
 /** WebP for alpha at a fraction of PNG's size. Chromium-only app, so
  *  the format is not in question. */
@@ -200,11 +207,12 @@ function remember(key: string, value: Thumbnail): void {
  * of asset resolution rests on.
  */
 function keyFor(root: string | null, path: string,
-                r: Resolution, region: RegionBox | null): string {
+                r: Resolution, region: RegionBox | null,
+                px: number): string {
   const stamp = `${r.mtime ?? "?"}:${r.sizeBytes ?? "?"}`;
   const box = region === null
     ? "full" : `${region.x},${region.y},${region.w},${region.h}`;
-  return `${root ?? "-"}|${path}|${stamp}|${THUMB_PX}|${box}`;
+  return `${root ?? "-"}|${path}|${stamp}|${String(px)}|${box}`;
 }
 
 /**
@@ -221,7 +229,7 @@ function keyFor(root: string | null, path: string,
  * for.
  */
 async function draw(
-  bytes: Uint8Array, region: RegionBox | null,
+  bytes: Uint8Array, region: RegionBox | null, px: number,
 ): Promise<Thumbnail | null> {
   const blob = new Blob([new Uint8Array(bytes)]);
   let source: ImageBitmap | null = null;
@@ -229,14 +237,14 @@ async function draw(
   try {
     if (region === null) {
       source = await createImageBitmap(blob, {
-        resizeWidth: THUMB_PX, resizeQuality: "high",
+        resizeWidth: px, resizeQuality: "high",
       });
     } else {
       const full = await createImageBitmap(blob);
       if (regionFits(region, full.width, full.height)) {
         source = await createImageBitmap(
           full, region.x, region.y, region.w, region.h,
-          { resizeWidth: THUMB_PX, resizeQuality: "high" });
+          { resizeWidth: px, resizeQuality: "high" });
         regionApplied = true;
         full.close();
       } else {
@@ -244,23 +252,23 @@ async function draw(
         // is the honest answer; clamping would present a corner of this
         // image as the thing the anchor names.
         source = await createImageBitmap(blob, {
-          resizeWidth: THUMB_PX, resizeQuality: "high",
+          resizeWidth: px, resizeQuality: "high",
         });
         full.close();
       }
     }
 
     const canvas = document.createElement("canvas");
-    canvas.width = THUMB_PX;
-    canvas.height = THUMB_PX;
+    canvas.width = px;
+    canvas.height = px;
     const ctx = canvas.getContext("2d");
     if (ctx === null) return null;
+    ctx.imageSmoothingQuality = "high";
 
-    const scale = Math.max(THUMB_PX / source.width,
-                           THUMB_PX / source.height);
+    const scale = Math.max(px / source.width, px / source.height);
     const w = source.width * scale;
     const h = source.height * scale;
-    ctx.drawImage(source, (THUMB_PX - w) / 2, (THUMB_PX - h) / 2, w, h);
+    ctx.drawImage(source, (px - w) / 2, (px - h) / 2, w, h);
     return { dataUrl: canvas.toDataURL(THUMB_TYPE, THUMB_QUALITY),
              regionApplied };
   } catch {
@@ -286,8 +294,10 @@ export async function thumbnailFor(
   path: string,
   resolution: Resolution,
   region: RegionBox | null,
+  /** The raster's edge. `TILE_THUMB_PX` where it is drawn in a tile. */
+  px: number = THUMB_PX,
 ): Promise<Thumbnail | null> {
-  const key = keyFor(root, path, resolution, region);
+  const key = keyFor(root, path, resolution, region, px);
 
   const cached = memory.get(key);
   if (cached !== undefined) {
@@ -311,11 +321,11 @@ export async function thumbnailFor(
 
     const bytes = await fileAt(root, path);
     if (bytes === null) return null;
-    const drawn = await draw(bytes, region);
+    const drawn = await draw(bytes, region, px);
     if (drawn === null) return null;
 
     const finalKey = drawn.regionApplied || region === null
-      ? key : keyFor(root, path, resolution, null);
+      ? key : keyFor(root, path, resolution, null, px);
     remember(finalKey, drawn);
     writeStored(finalKey, drawn.dataUrl);
     return drawn;
@@ -330,18 +340,37 @@ export async function thumbnailFor(
  * spans rows by its own aspect ratio), so these are resized, never
  * cover-cropped to a square like `thumbnailFor`'s.
  *
- * Three fixed sizes, matching the gallery's own column tiers, rather
- * than one per window width: a continuously-sized cache turns every
- * resize into a new entry, and makes "how much space is this using"
- * an unanswerable question (the same reasoning as the media server's
- * fixed preview presets, docs/media-server-spec.md).
+ * A few fixed widths rather than one per window width: a
+ * continuously-sized cache turns every resize into a new entry, and
+ * makes "how much space is this using" an unanswerable question (the
+ * same reasoning as the media server's fixed preview presets,
+ * docs/media-server-spec.md).
+ *
+ * The width is chosen from what the picture is DRAWN at, in device
+ * pixels. It used to be chosen from the gallery's size setting alone,
+ * at twice the column's MINIMUM width. But the columns are `1fr`, so
+ * they stretch well past that minimum, and on a scaled display a CSS
+ * pixel is more than one device pixel; a 340-pixel raster was being
+ * stretched across 500 or more, which is why images looked soft beside
+ * videos, whose frames come from the file itself.
  */
 
-export type GalleryTier = "s" | "m" | "l";
+/** The widths a preview is generated at, smallest first. */
+export const PREVIEW_WIDTHS = [340, 500, 760, 1140, 1520] as const;
 
-/** Twice the CSS column width (`GalleryView.tsx`'s `COLUMN_PX`), for
- *  HiDPI. */
-const GALLERY_PX: Record<GalleryTier, number> = { s: 340, m: 500, l: 760 };
+/**
+ * The preview width for a picture drawn `cssPx` wide: the smallest
+ * preset that covers it in device pixels, or the largest there is.
+ */
+export function previewWidthFor(
+  cssPx: number,
+  dpr: number = typeof window === "undefined"
+    ? 1 : window.devicePixelRatio,
+): number {
+  const need = Math.ceil(cssPx * Math.max(1, dpr || 1));
+  return PREVIEW_WIDTHS.find((w) => w >= need) ??
+    PREVIEW_WIDTHS[PREVIEW_WIDTHS.length - 1]!;
+}
 
 export interface GalleryPreview {
   dataUrl: string;
@@ -363,13 +392,13 @@ function rememberGallery(key: string, value: GalleryPreview): void {
 }
 
 function galleryKeyFor(
-  root: string | null, path: string, r: Resolution, tier: GalleryTier,
+  root: string | null, path: string, r: Resolution, width: number,
 ): string {
   const stamp = `${r.mtime ?? "?"}:${r.sizeBytes ?? "?"}`;
-  return `gl|${root ?? "-"}|${path}|${stamp}|${tier}`;
+  return `gl|${root ?? "-"}|${path}|${stamp}|w${String(width)}`;
 }
 
-/** Downscaled to the tier's width, aspect kept, never cropped. The
+/** Downscaled to the given width, aspect kept, never cropped. The
  *  decoder downscales AS it decodes (`resizeWidth`), so a large plate
  *  never exists as a full bitmap. */
 async function drawGallery(
@@ -412,9 +441,10 @@ export async function galleryPreviewFor(
   root: string | null,
   path: string,
   resolution: Resolution,
-  tier: GalleryTier,
+  /** One of `PREVIEW_WIDTHS`; see `previewWidthFor`. */
+  width: number,
 ): Promise<GalleryPreview | null> {
-  const key = galleryKeyFor(root, path, resolution, tier);
+  const key = galleryKeyFor(root, path, resolution, width);
 
   const cached = galleryMemory.get(key);
   if (cached !== undefined) {
@@ -440,7 +470,7 @@ export async function galleryPreviewFor(
 
     const bytes = await fileAt(root, path);
     if (bytes === null) return null;
-    const drawn = await drawGallery(bytes, GALLERY_PX[tier]);
+    const drawn = await drawGallery(bytes, width);
     if (drawn === null) return null;
 
     rememberGallery(key, drawn);

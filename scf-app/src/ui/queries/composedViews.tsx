@@ -154,6 +154,32 @@ export function DossierView({ p }: { p: Q01Result }): JSX.Element {
           </ul>
         </section>
       )}
+      {p.relationships.length > 0 && (
+        <section>
+          <h3>Relationships</h3>
+          <ul className="qlist">
+            {p.relationships.map((r, i) => (
+              <li key={r.relationship.uuid ?? i}>
+                {r.other === null
+                  ? <span className="muted">someone not in this file</span>
+                  : <RowLink entity="character" row={r.other} />}
+                {field(r.relationship, "relationship_type") !== null && (
+                  <span className="scope-tag">
+                    {field(r.relationship, "relationship_type")}
+                  </span>
+                )}
+                {/* a_to_b runs A to B (spec §6.5): read it from the
+                    subject's own end. */}
+                <span className="scope-tag">
+                  {field(r.relationship, "directionality") === "a_to_b"
+                    ? (r.side === "a" ? "to them" : "from them")
+                    : field(r.relationship, "directionality") ?? "—"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
   );
 }

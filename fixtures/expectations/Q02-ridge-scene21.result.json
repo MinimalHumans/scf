@@ -1,6 +1,6 @@
 {
   "query": "Q02",
-  "resultFormat": "1.0",
+  "resultFormat": "1.1",
   "schemaVersion": "2.25",
   "parameters": {
     "subjectType": "location",
@@ -92,7 +92,8 @@
         }
       ],
       "motifCarriage": [],
-      "thematicConnections": []
+      "thematicConnections": [],
+      "relationships": []
     },
     "costumes": [],
     "relationshipStates": [],

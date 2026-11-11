@@ -56,6 +56,10 @@ struct Hello {
     /// main thread is still alive. No session is added for this.
     #[serde(default)]
     raise: bool,
+    /// A file this second launch was given to open (a `.scf`
+    /// double-click), passed along with `raise`.
+    #[serde(default)]
+    open: Option<String>,
 }
 
 fn yes() -> bool {
@@ -162,7 +166,7 @@ type OnCount = Box<dyn Fn(usize) + Send>;
 /// Puts a window-raise on the app's main thread, calling back once it
 /// has actually run there — the only way to tell a frozen main thread
 /// from one that is merely slow.
-type Raiser = Arc<dyn Fn(Box<dyn FnOnce() + Send>) + Send + Sync>;
+type Raiser = Arc<dyn Fn(Option<String>, Box<dyn FnOnce() + Send>) + Send + Sync>;
 
 /// The pipes connected now. Cheap to clone; every clone is the same.
 #[derive(Clone)]
@@ -200,7 +204,9 @@ impl Relay {
         *self.on_count.lock().unwrap() = Some(Box::new(f));
     }
 
-    pub fn set_raiser(&self, f: impl Fn(Box<dyn FnOnce() + Send>) + Send + Sync + 'static) {
+    pub fn set_raiser(
+        &self, f: impl Fn(Option<String>, Box<dyn FnOnce() + Send>) + Send + Sync + 'static,
+    ) {
         *self.raiser.lock().unwrap() = Some(Arc::new(f));
     }
 
@@ -324,7 +330,7 @@ async fn serve(relay: Relay, stream: TcpStream, token: Arc<String>) {
     }
 
     if hello.raise {
-        let ok = raise_window(&relay).await;
+        let ok = raise_window(&relay, hello.open.clone()).await;
         let reply = serde_json::json!({ "ok": ok }).to_string();
         let _ = write.write_all(reply.as_bytes()).await;
         let _ = write.write_all(b"\n").await;
@@ -359,10 +365,10 @@ const RAISE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Ask the window to raise itself, and wait for it to actually have
 /// done so. `false` means either no window exists yet or its main
 /// thread never got back to us in time — frozen, most likely.
-async fn raise_window(relay: &Relay) -> bool {
+async fn raise_window(relay: &Relay, open: Option<String>) -> bool {
     let Some(raiser) = relay.raiser() else { return false };
     let (tx, rx) = oneshot::channel();
-    raiser(Box::new(move || {
+    raiser(open, Box::new(move || {
         let _ = tx.send(());
     }));
     tokio::time::timeout(RAISE_TIMEOUT, rx).await.is_ok()

@@ -509,6 +509,10 @@ export interface Q13Reference {
   /** Why, for anything not `resolved`. */
   detail: string | null;
   sizeBytes: number | null;
+  /** The asset's `lifecycle_status`, unset read as `active` (§12.8). */
+  lifecycleStatus: string;
+  /** The superseded asset this one stands in for, by uuid, or null. */
+  supersedes: string | null;
 }
 
 /**
@@ -611,6 +615,8 @@ export async function q13Result(
       state: r.state,
       detail: r.detail,
       sizeBytes: r.sizeBytes,
+      lifecycleStatus: r.lifecycleStatus,
+      supersedes: r.supersedes,
     })),
     counts: { ...refs.summary.counts },
     rootMapped,
@@ -1248,6 +1254,20 @@ export interface DossierComposition {
   groups: DossierGroup[];
   motifCarriage: Array<{ appearance: Row; motif: Row | null }>;
   thematicConnections: Row[];
+  relationships: DossierRelationship[];
+}
+
+/**
+ * One of a character's relationships, read from the subject's end
+ * (§12.15). `side` is the column the subject occupies, which is what
+ * makes `a_to_b` readable: it runs A → B, and a consumer cannot say
+ * which way that is without knowing which end it is standing on.
+ */
+export interface DossierRelationship {
+  relationship: Row;
+  /** The character at the other end; null where that row is absent. */
+  other: Row | null;
+  side: "a" | "b";
 }
 
 /**
@@ -1312,7 +1332,50 @@ export async function composeDossier(
     thematicConnections: await rows(
       ctx.exec, "thematic_connection", "entity_type = ? AND entity_id = ?",
       [subjectType, subjectId]),
+    relationships: subjectType === "character"
+      ? await dossierRelationships(ctx, subjectId) : [],
   };
+}
+
+/**
+ * A character's relationships, from either column (§6.5, §12.15).
+ *
+ * `character_relationship` is about both of its characters equally, so
+ * the group walk above — which asks for the one column that says "this
+ * row is about that subject" — never finds it. It is read here instead,
+ * with the other party resolved, because a relationship that does not
+ * say who it is with is not much of an answer.
+ *
+ * A relationship to a CUT character is absent (§6.6.1): it joins someone
+ * who is not in the film. One whose other end names no row at all is
+ * kept, with `other` null (§9.2); `relationship.endpoint_absent` reports
+ * it. A row naming the subject twice appears once, as side "a".
+ */
+async function dossierRelationships(
+    ctx: ScfContext, subjectId: number): Promise<DossierRelationship[]> {
+  const found = await rows(
+    ctx.exec, "character_relationship",
+    "character_a_id = ? OR character_b_id = ?", [subjectId, subjectId]);
+  const out: DossierRelationship[] = [];
+  for (const relationship of found) {
+    const side: "a" | "b" =
+      asId(relationship["character_a_id"]) === subjectId ? "a" : "b";
+    const otherId = asId(
+      relationship[side === "a" ? "character_b_id" : "character_a_id"]);
+    let other: Row | null = null;
+    if (otherId !== null) {
+      other = (await rows(ctx.exec, "character", "id = ?", [otherId]))[0]
+        ?? null;
+      if (other === null) {
+        const anyone = await rowsIncludingCut(
+          ctx.exec, "character", "id = ?", [otherId]);
+        if (anyone.length > 0) continue;        // cut: not in the film
+      }
+    }
+    out.push({ relationship, other, side });
+  }
+  return out.sort((a, b) =>
+    (asId(a.relationship["id"]) ?? 0) - (asId(b.relationship["id"]) ?? 0));
 }
 
 // ---------------------------------------------------------------------------
@@ -1327,6 +1390,10 @@ export interface Q01Result {
     appearance: ProjectedRow; motif: ProjectedRow | null;
   }>;
   thematicConnections: ProjectedRow[];
+  relationships: Array<{
+    relationship: ProjectedRow; other: ProjectedRow | null;
+    side: "a" | "b";
+  }>;
 }
 
 function projectDossier(
@@ -1348,6 +1415,13 @@ function projectDossier(
     })),
     thematicConnections: d.thematicConnections.map(
       (t) => projectRow(t, refs(ctx, "thematic_connection"), lookup)),
+    relationships: d.relationships.map((r) => ({
+      relationship: projectRow(
+        r.relationship, refs(ctx, "character_relationship"), lookup),
+      other: r.other === null
+        ? null : projectRow(r.other, refs(ctx, "character"), lookup),
+      side: r.side,
+    })),
   };
 }
 

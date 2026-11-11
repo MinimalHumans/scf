@@ -15,8 +15,6 @@ import { EditorView } from "@codemirror/view";
 
 import { EditorState, Transaction } from "@codemirror/state";
 import { exec, registry, useStore } from "../state/store.ts";
-import { suggestExportName } from "../state/saveName.ts";
-import { screenplayFountain } from "../state/screenplayLayout.ts";
 import {
   readScreenplay, type TitlePageRow,
 } from "@scf-core/screenplay/rowModel.ts";
@@ -33,7 +31,7 @@ import {
 } from "../editor/extensions.ts";
 import { lineEntries, lineEvents } from "../editor/lineState.ts";
 import {
-  diffVersionAgainstCurrent, planCommitLinks, validateTags,
+  planCommitLinks, validateTags,
   type CommitPlanInfo,
 } from "@scf-core/ops/features.ts";
 import { paginationFor } from "../editor/extensions.ts";
@@ -107,11 +105,9 @@ export function ScriptView(): JSX.Element {
   const [empty, setEmpty] = useState(false);
   const [importing, setImporting] = useState(false);
   const [stale, setStale] = useState<StaleNotice[]>([]);
-  const [cursorBlock, setCursorBlock] = useState<Block | null>(null);
   const [selection, setSelection] =
     useState<{ lineId: string; from: number; to: number;
                text: string } | null>(null);
-  const [showVersions, setShowVersions] = useState(false);
   const [showIntegrity, setShowIntegrity] = useState(false);
   const [integrityCount, setIntegrityCount] = useState(0);
   const [liveLineIds, setLiveLineIds] =
@@ -572,13 +568,6 @@ export function ScriptView(): JSX.Element {
               const head = u.state.selection.main.head;
               const line = u.state.doc.lineAt(head);
               const entry = lineEntries(u.state)[line.number - 1];
-              setCursorBlock(entry !== undefined
-                ? prevBlocksRef.current.get(entry.id) ?? {
-                    id: entry.id, type: entry.type, text: line.text,
-                    sceneId: null, characterId: null, locationId: null,
-                    metadata: null,
-                  }
-                : null);
               const sel = u.state.selection.main;
               if (!sel.empty && entry !== undefined &&
                   sel.from >= line.from && sel.to <= line.to) {
@@ -873,27 +862,6 @@ export function ScriptView(): JSX.Element {
     await updateDirty();
   };
 
-  const exportFountain = (): void => {
-    const view = viewRef.current;
-    if (view === null) return;
-    const plan = commitPlan(view.state, prevBlocksRef.current);
-    const blocks: Block[] = plan.rows.map((r) => ({
-      id: r.uuid!, type: r.lineType as Block["type"], text: r.content,
-      sceneId: r.sceneId, characterId: r.characterId,
-      locationId: r.locationId, metadata: r.metadata,
-    }));
-    const text = screenplayFountain(titlePageRef.current, blocks);
-    const blob = new Blob([text], { type: "text/plain" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    // Named for the project, not a constant. Every export used to land
-    // as "screenplay.fountain", which is how one can end up beside — or
-    // over — the file it was imported from.
-    a.download = suggestExportName(useStore.getState().projectName);
-    a.click();
-    URL.revokeObjectURL(a.href);
-  };
-
   return (
     <div className="script-view">
       <div className="script-toolbar">
@@ -923,11 +891,6 @@ export function ScriptView(): JSX.Element {
         {commitNote !== "" && (
           <span className="commit-note">{commitNote}</span>
         )}
-        <BeatControl block={cursorBlock}
-                     onCreated={(modality) => {
-                       say(`${modality} beat added`);
-                       void refreshAnnotations();
-                     }} />
         <TagControl selection={selection} onTagged={(name) => {
           say(`tagged as ${name}`);
           void refreshAnnotations();
@@ -940,8 +903,6 @@ export function ScriptView(): JSX.Element {
             ⚑ {integrityCount} dangling
           </button>
         )}
-        <button onClick={() => setShowVersions(!showVersions)}
-                aria-pressed={showVersions}>Versions</button>
         <button className={dirty ? "commit-dirty" : "commit-clean"}
                 onClick={() => void explicitCommit()}
                 title="Cmd/Ctrl-S — reviews new entities before creating">
@@ -1037,11 +998,6 @@ export function ScriptView(): JSX.Element {
                           onChanged={() => {
                             void refreshAnnotations();
                           }} />
-        )}
-        {showVersions && (
-          <VersionsPanel onImport={() => setImporting(true)}
-                         onExport={exportFountain}
-                         exportDisabled={empty} />
         )}
       </div>
       {menu !== null && selection !== null && (
@@ -1202,35 +1158,6 @@ export function ScriptView(): JSX.Element {
 }
 
 
-function BeatControl({ block, onCreated }: {
-  block: Block | null;
-  onCreated: (modality: string) => void;
-}): JSX.Element {
-  const enabled = block !== null && block.sceneId !== null &&
-                  block.characterId !== null;
-  return (
-    <select className="beat-control" value=""
-            disabled={!enabled}
-            title={enabled
-              ? "Anchor a performance beat to this line"
-              : "Beats need a line with scene + character context " +
-                "(dialogue under an accepted cue)"}
-            onChange={(e) => {
-              const modality = e.target.value as
-                "physical" | "vocal" | "facial" | "";
-              e.target.value = "";
-              if (modality === "" || block === null) return;
-              void call("script.createBeat", block, modality, block.text)
-                .then(() => onCreated(modality));
-            }}>
-      <option value="" disabled>＋ beat</option>
-      <option value="vocal">vocal</option>
-      <option value="physical">physical</option>
-      <option value="facial">facial</option>
-    </select>
-  );
-}
-
 function TagControl({ selection, onTagged }: {
   selection: { lineId: string; from: number; to: number;
                text: string } | null;
@@ -1280,103 +1207,6 @@ function TagControl({ selection, onTagged }: {
     </select>
   );
 }
-
-function VersionsPanel({ onImport, onExport,
-                         exportDisabled }: {
-  onImport: () => void;
-  onExport: () => void;
-  exportDisabled: boolean;
-}): JSX.Element {
-  const [description, setDescription] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [diffs, setDiffs] = useState<Map<number,
-    { kept: number; added: number; removed: number }>>(new Map());
-  const versions = useQuery(
-    "SELECT * FROM screenplay_versions ORDER BY version_number DESC");
-
-  return (
-    <aside className="versions-panel">
-      <h3>Versions</h3>
-      <p className="version-caveat">
-        <b>Scheduled for replacement.</b> Publishing and diffing work and
-        are non-destructive. Reverting has been retired: a version
-        snapshots the SCRIPT, not the records it points at, so it could
-        never restore a scene, character or location deleted since — an
-        SCF describes what is in the film, not everything that has been
-        tried. Keep your own versions of the file, and export a
-        .fountain when you need a snapshot to read.
-      </p>
-      <div className="version-io">
-        <button onClick={onImport}>Import…</button>
-        <button onClick={onExport} disabled={exportDisabled}>
-          Export .fountain
-        </button>
-      </div>
-      <div className="version-publish">
-        <input placeholder="description…" value={description}
-               onChange={(e) => setDescription(e.target.value)} />
-        <button className="primary" disabled={busy}
-                onClick={() => {
-                  setBusy(true);
-                  void call("script.publishVersion", description).then(() => {
-                    setDescription("");
-                    setBusy(false);
-                  });
-                }}>
-          Publish
-        </button>
-      </div>
-      <ul className="version-list">
-        {versions.map((v) => {
-          const id = v["id"] as number;
-          const d = diffs.get(id);
-          return (
-            <li key={id}>
-              <div className="version-head">
-                <b>v{String(v["version_number"])}</b>
-                <span className="muted">
-                  {String(v["published_at"] ?? "")}
-                </span>
-              </div>
-              {String(v["description"] ?? "") !== "" && (
-                <div className="version-desc">
-                  {String(v["description"])}
-                </div>
-              )}
-              <div className="muted version-counts">
-                {String(v["line_count"])} lines ·{" "}
-                {String(v["scene_count"])} scenes ·{" "}
-                {String(v["word_count"])} words
-              </div>
-              {d !== undefined ? (
-                <div className="version-diff">
-                  vs current: {d.kept} kept, {d.added} added,{" "}
-                  {d.removed} removed
-                </div>
-              ) : (
-                <button className="linkish" onClick={() => {
-                  void diffVersionAgainstCurrent(exec, id).then((r) => {
-                    setDiffs((old) => new Map(old).set(id, {
-                      kept: r.kept, added: r.added, removed: r.removed,
-                    }));
-                  });
-                }}>
-                  diff vs current
-                </button>
-              )}
-            </li>
-          );
-        })}
-        {versions.length === 0 && (
-          <li className="muted">No versions published yet.</li>
-        )}
-      </ul>
-
-    </aside>
-  );
-}
-
-
 
 function PropContextMenu({ at, selection, onClose, onDone }: {
   at: { x: number; y: number };

@@ -231,20 +231,49 @@ describe("the write tools", () => {
       { entityType: "character", label: "NO CUE HERE" })).json as
       Array<{ uuid: string }>)[0]!.uuid;
 
+    // A link to a character row that does not exist points at nothing
+    // (`reference.dangling`, spec §9.4.1). A row id is accepted as given,
+    // so this is the gate's to catch.
     const args = { entityType: "scene_character",
-      values: { scene_id: SCENE12, character_id: who } };
+      values: { scene_id: SCENE12, character_id: 9001 } };
     const plan = await call("create_row", args);
     expect(plan.plan.plan.blocked).toBe(true);
-    expect(plan.plan.plan.risks.join(" ")).toContain("NO CUE HERE");
+    expect(plan.plan.plan.risks.join(" ")).toContain("names no character");
     expect(plan.plan.next).toContain("refused");
 
     const forced = await call("create_row",
       { ...args, confirm: plan.plan.plan.planId });
     expect(forced.isError).toBe(true);
-    // Nothing points at the new character: the refused link was not made.
+    // Nothing points at the new character: no link was made.
     const used = (await callTool(server, "where_used",
       { entityType: "character", uuid: who })).json as { usedBy: unknown[] };
     expect(used.usedBy).toEqual([]);
+  }, 240_000);
+
+  test("someone present and silent can be linked: the plan asks, and " +
+      "does not refuse", async () => {
+    const made = await call("create_row",
+      { entityType: "character", values: { name: "SILENT WITNESS" } });
+    await call("create_row", { entityType: "character",
+      values: { name: "SILENT WITNESS" }, confirm: made.plan.plan.planId });
+    const who = ((await callTool(server, "find",
+      { entityType: "character", label: "SILENT WITNESS" })).json as
+      Array<{ uuid: string }>)[0]!.uuid;
+
+    const args = { entityType: "scene_character",
+      values: { scene_id: SCENE12, character_id: who } };
+    const plan = await call("create_row", args);
+    expect(plan.plan.plan.blocked).toBe(false);
+    expect(plan.plan.plan.risks.join(" ")).toContain("SILENT WITNESS");
+    expect(plan.plan.plan.risks.join(" ")).toContain("without a cue");
+
+    const applied = await call("create_row",
+      { ...args, confirm: plan.plan.plan.planId });
+    expect(applied.isError).toBe(false);
+    expect(applied.plan.status).toBe("applied");
+    const used = (await callTool(server, "where_used",
+      { entityType: "character", uuid: who })).json as { usedBy: unknown[] };
+    expect(used.usedBy).toHaveLength(1);
   }, 240_000);
 
   test("shots: add, move, cut and restore, each as a plan first",
@@ -288,6 +317,48 @@ describe("the write tools", () => {
     const again = await call("set_title_page_key",
       { key: "author", value: "Test Author" });
     expect(again.plan.plan.op).toBeNull();
+  }, 180_000);
+
+  test("a polymorphic reference given as a uuid is stored as the row id",
+      async () => {
+    const ASSET = "f9dfae2d-2cc7-42af-b2ac-d9089025a444"; // id 2
+    const valuesOf = (r: Awaited<ReturnType<typeof call>>) =>
+      (r.plan.plan.op as unknown as
+        { args: { values: Record<string, unknown> } }).args.values;
+
+    // create: the sibling is in the same call.
+    const created = await call("create_row", {
+      entityType: "asset_relationship",
+      values: { asset_id: ASSET, entity_type: "character",
+                entity_id: ELEANOR, relationship_type: "reference" },
+    });
+    expect(created.isError).toBe(false);
+    expect(valuesOf(created)).toMatchObject({ asset_id: 2, entity_id: 1 });
+
+    // A uuid of the wrong kind, an unset sibling, and a bare string are
+    // refused rather than stored as text pointing at nothing.
+    for (const values of [
+      { asset_id: ASSET, entity_type: "prop", entity_id: ELEANOR },
+      { asset_id: ASSET, entity_id: ELEANOR },
+      { asset_id: ASSET, entity_type: "character", entity_id: "Eleanor" },
+    ]) {
+      const r = await call("create_row",
+        { entityType: "asset_relationship", values });
+      expect(r.isError).toBe(true);
+    }
+
+    // update: the sibling comes from the row when the call leaves it out.
+    const COSTUME_LINK = "00000000-0000-4000-8000-0000000b0009";
+    const wrongKind = await call("update_row", { entityType:
+      "asset_relationship", uuid: COSTUME_LINK,
+      values: { entity_id: ELEANOR } });
+    expect(wrongKind.isError).toBe(true);
+    const retargeted = await call("update_row", { entityType:
+      "asset_relationship", uuid: COSTUME_LINK,
+      values: { entity_type: "character", entity_id: ELEANOR } });
+    expect(retargeted.isError).toBe(false);
+    expect(valuesOf(retargeted)).toMatchObject(
+      { entity_type: "character", entity_id: 1 });
   }, 180_000);
 
   test("a film from an older schema is refused with a way forward",

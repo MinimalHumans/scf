@@ -19,7 +19,7 @@
 
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { confirm, open } from "@tauri-apps/plugin-dialog";
+import { confirm, message, open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import type { ProjectRow } from "@scf-host/appStore.ts";
 import { windowAppStore } from "../../host/windowAppStore.ts";
@@ -69,6 +69,55 @@ const SECTIONS: { id: Section; label: string }[] = [
   { id: "media", label: "Media" },
 ];
 
+interface McpInstallResult {
+  path: string;
+  existed: boolean;
+}
+
+function ClaudeDesktopSection(): JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const install = (): void => {
+    void (async () => {
+      setBusy(true);
+      setError(null);
+      const result = await invoke<McpInstallResult>(
+        "mcp_install_claude_desktop");
+      const backupNote = result.existed
+        ? " Its previous config was backed up alongside it as " +
+          "claude_desktop_config.json.bak."
+        : "";
+      await message(
+        `Added SCF Editor to ${result.path}.${backupNote}\n\n` +
+        "Quit Claude Desktop completely and reopen it for the change " +
+        "to take effect — closing the window alone isn't enough.",
+        { title: "Claude Desktop", kind: "info" },
+      );
+    })().catch((e: unknown) => setError(describe(e)))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <section>
+      <h4>Claude Desktop</h4>
+      <p className="muted small">
+        Adds this app to Claude Desktop's own config as an MCP server, so
+        an assistant there can open and query SCF films. Claude Desktop
+        only reads that file at launch, so it needs a full restart — not
+        just closing and reopening the window — before the connection
+        shows up.
+      </p>
+      <div className="settings-row">
+        <button className="ghost tiny" disabled={busy} onClick={install}>
+          Add to Claude Desktop…
+        </button>
+      </div>
+      {error !== null && <p className="settings-error">{error}</p>}
+    </section>
+  );
+}
+
 function GeneralSection(): JSX.Element {
   const { rememberTabs, setRememberTabs, developerMode, setDeveloperMode } =
     useSettings();
@@ -97,6 +146,8 @@ function GeneralSection(): JSX.Element {
         Off by default: it is a diagnostic for working on SCF itself,
         not something a shoot needs open.
       </p>
+
+      <ClaudeDesktopSection />
     </section>
   );
 }

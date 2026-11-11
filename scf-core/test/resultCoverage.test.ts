@@ -30,6 +30,16 @@ const EMPTY_BY_DESIGN: Record<string, string> = {
     "Environment-dependent (§8.3): no root is mapped when results are blessed.",
   "Q13.references[].sizeBytes":
     "Environment-dependent (§8.3): no root is mapped when results are blessed.",
+  // NOT empty by definition: empty because the fixture has no bound,
+  // superseded asset (proposal 0039's Resolution; `stability.md` marks the
+  // §12.8 row "Partly"). Author one and the test below fails until these
+  // two lines are dropped, which is the point of listing them here.
+  "Q02.media.references[].supersedes":
+    "Fixture gap: no bound asset is superseded. Pinned on a copy by " +
+    "supersededGivesWay.test.ts.",
+  "Q13.references[].supersedes":
+    "Fixture gap: no bound asset is superseded. Pinned on a copy by " +
+    "supersededGivesWay.test.ts.",
 };
 
 const isEmpty = (v: unknown): boolean =>

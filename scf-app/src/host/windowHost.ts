@@ -35,9 +35,8 @@ async function start(): Promise<HostCore> {
   const [setup, platform] = await Promise.all([
     invoke<HostSetup>("host_setup"), createTauriPlatform(),
   ]);
-  // A reload leaves the last page's films open in the shell.
-  await invoke("sql_reset");
-  // After the reset, which closes every database the last page opened.
+  // The shell's databases from a previous page are closed by the first
+  // open on this one (`tauriSql.ts`), whoever makes it.
   // A trail that cannot be opened must not keep films from opening: the
   // host runs without it and says so.
   const audit = await windowAuditStore().catch((e: unknown) => {

@@ -244,7 +244,7 @@ export interface QueryResult<T> {
 }
 
 /** Bumped when the envelope changes, not when SCF does. */
-export const QUERY_RESULT_FORMAT = "1.0";
+export const QUERY_RESULT_FORMAT = "1.1";
 
 export function envelope<T>(
     query: string, registry: Registry,

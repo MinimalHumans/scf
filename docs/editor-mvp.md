@@ -525,6 +525,13 @@ alone on the road in sc 1 and on the ridge in sc 21, and `Eleanor` and
 purpose. A panel that shows six defensible questions demonstrates §9.2
 better than one showing none.
 
+**The check is advisory to agents too (proposal 0041).** The host's
+write gate once treated a new unjustified link as a reason to refuse an
+agent's write, which turned these questions into refusals: 94 silent
+presences on one film could not be linked at all. Since 0041 the gate
+returns it as a note for the plan's risks and applies the write; spec
+§2.4.1 says a presence link is authored, not derived from the script.
+
 An action-names-the-character rule was considered and NOT taken. It
 would clear four of the six, but it is a heuristic — action names absent
 characters too ("Ada's shawl" sits in a scene Ada is not in) — and the

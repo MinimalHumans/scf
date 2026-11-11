@@ -1,6 +1,6 @@
 {
   "query": "Q02",
-  "resultFormat": "1.0",
+  "resultFormat": "1.1",
   "schemaVersion": "2.25",
   "parameters": {
     "subjectType": "prop",
@@ -167,7 +167,8 @@
             "theme_uuid": "5a2a0ae1-097e-4273-a50e-b4843904e55d"
           }
         }
-      ]
+      ],
+      "relationships": []
     },
     "costumes": [],
     "relationshipStates": [],
@@ -232,7 +233,9 @@
           "provenance": "anchor",
           "state": "unaddressed",
           "detail": "no root named @project is configured in this session",
-          "sizeBytes": null
+          "sizeBytes": null,
+          "lifecycleStatus": "active",
+          "supersedes": null
         },
         {
           "uuid": "1869343e-d6b5-4a4e-9460-535b4724766c",
@@ -245,7 +248,9 @@
           "provenance": "bundle",
           "state": "unaddressed",
           "detail": "no root named @project is configured in this session",
-          "sizeBytes": null
+          "sizeBytes": null,
+          "lifecycleStatus": "active",
+          "supersedes": null
         },
         {
           "uuid": "ae574d0f-2627-4ec4-9e2b-b5d8e2fcd9a5",
@@ -258,7 +263,9 @@
           "provenance": "bundle",
           "state": "unaddressed",
           "detail": "no root named @project is configured in this session",
-          "sizeBytes": null
+          "sizeBytes": null,
+          "lifecycleStatus": "active",
+          "supersedes": null
         },
         {
           "uuid": "44f2249b-114e-4b6b-9e07-82fa6cd0f0f1",
@@ -271,7 +278,9 @@
           "provenance": "bundle",
           "state": "unaddressed",
           "detail": "no root named @project is configured in this session",
-          "sizeBytes": null
+          "sizeBytes": null,
+          "lifecycleStatus": "active",
+          "supersedes": null
         },
         {
           "uuid": "2ed29664-fb95-414f-9fc1-b93e8d553ca3",
@@ -284,7 +293,9 @@
           "provenance": "bundle",
           "state": "unaddressed",
           "detail": "no root named @project is configured in this session",
-          "sizeBytes": null
+          "sizeBytes": null,
+          "lifecycleStatus": "active",
+          "supersedes": null
         },
         {
           "uuid": "00000000-0000-4000-8000-00c400000001",
@@ -297,7 +308,9 @@
           "provenance": "bundle",
           "state": "out-of-root",
           "detail": "an absolute path resolves on this machine and nowhere else — it will not travel with the project",
-          "sizeBytes": null
+          "sizeBytes": null,
+          "lifecycleStatus": "active",
+          "supersedes": null
         }
       ],
       "counts": {

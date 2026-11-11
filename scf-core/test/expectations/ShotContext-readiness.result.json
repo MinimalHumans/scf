@@ -1,7 +1,7 @@
 [
   {
     "query": "Q14",
-    "resultFormat": "1.0",
+    "resultFormat": "1.1",
     "schemaVersion": "2.25",
     "parameters": {
       "target": "Q07",
@@ -72,7 +72,7 @@
   },
   {
     "query": "Q14",
-    "resultFormat": "1.0",
+    "resultFormat": "1.1",
     "schemaVersion": "2.25",
     "parameters": {
       "target": "Q08",
@@ -123,7 +123,7 @@
   },
   {
     "query": "Q14",
-    "resultFormat": "1.0",
+    "resultFormat": "1.1",
     "schemaVersion": "2.25",
     "parameters": {
       "target": "Q02",
@@ -184,7 +184,7 @@
   },
   {
     "query": "Q14",
-    "resultFormat": "1.0",
+    "resultFormat": "1.1",
     "schemaVersion": "2.25",
     "parameters": {
       "target": "Q06",
@@ -240,7 +240,7 @@
   },
   {
     "query": "Q14",
-    "resultFormat": "1.0",
+    "resultFormat": "1.1",
     "schemaVersion": "2.25",
     "parameters": {
       "target": "Q05",
@@ -301,7 +301,7 @@
   },
   {
     "query": "Q14",
-    "resultFormat": "1.0",
+    "resultFormat": "1.1",
     "schemaVersion": "2.25",
     "parameters": {
       "target": "Q02",
@@ -362,7 +362,7 @@
   },
   {
     "query": "Q14",
-    "resultFormat": "1.0",
+    "resultFormat": "1.1",
     "schemaVersion": "2.25",
     "parameters": {
       "target": "Q06",
@@ -418,7 +418,7 @@
   },
   {
     "query": "Q14",
-    "resultFormat": "1.0",
+    "resultFormat": "1.1",
     "schemaVersion": "2.25",
     "parameters": {
       "target": "Q05",

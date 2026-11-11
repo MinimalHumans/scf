@@ -136,7 +136,7 @@ function MediaTileView({ tile, index, count, run, onMove, onOpen }: {
                    (standing.historic ? " media-tile-historic" : "")}>
       <div className="media-thumb">
         <AssetThumb identifier={typeof identifier === "string" ? identifier : null}
-                    size="md" alt={name} onClick={onOpen} />
+                    size="md" detail="tile" alt={name} onClick={onOpen} />
         <span className="media-index">{index + 1}</span>
       </div>
       <div className="media-meta">

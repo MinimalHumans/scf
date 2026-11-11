@@ -153,18 +153,31 @@ describe("what the host does for a tool's writes", () => {
       ],
       titlePage: [], link: { createNew: false },
     }] });
+    // A link to a character that does not exist points at nothing
+    // (`reference.dangling`, spec §9.4.1).
     const link = { name: "record.create", args: {
       entity: "scene_character",
-      values: { scene_id: scene, character_id: person } } };
+      values: { scene_id: scene, character_id: person + 9000 } } };
     const e = await err(agent, "op", link);
     expect(e.code).toBe("integrity_gate");
     expect((e.data?.["added"] as { kind: string }[])[0]!.kind)
-      .toBe("unjustified_link");
+      .toBe("dangling_reference");
     expect(await ok(agent, "query",
       { sql: "SELECT COUNT(*) AS n FROM scene_character" }) as unknown)
       .toEqual([{ n: 0 }]);
     // With a person watching, the caller can ask for it anyway.
     await ok(agent, "op", { ...link, integrityGate: false });
+    // Someone present and silent is not refused (§2.4.1): the dry run
+    // notes the question and the write goes through the gate.
+    const silent = { name: "record.create", args: {
+      entity: "scene_character",
+      values: { scene_id: scene, character_id: person } } };
+    const dry = await ok(agent, "op", { ...silent, dryRun: true });
+    const report = dry["dryRun"] as
+      { added: unknown[]; noted: { kind: string }[] };
+    expect(report.added).toEqual([]);
+    expect(report.noted.map((n) => n.kind)).toEqual(["unjustified_link"]);
+    await ok(agent, "op", silent);
   }, 60_000);
 
   test("a dry run says what would happen and changes nothing at all",
@@ -177,6 +190,7 @@ describe("what the host does for a tool's writes", () => {
       dryRun: true, expectedRevision: before });
     expect(r["revision"]).toBe(before);
     expect((r["dryRun"] as { added: unknown[] }).added).toEqual([]);
+    expect((r["dryRun"] as { noted: unknown[] }).noted).toEqual([]);
     expect(await ok(agent, "query",
       { sql: "SELECT COUNT(*) AS n FROM character" }) as unknown)
       .toEqual([{ n: 0 }]);

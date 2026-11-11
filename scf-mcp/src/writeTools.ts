@@ -37,8 +37,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
-  TITLE_KEYS, getOp, nextShotNumber, readMeta, rowLabel, rowsIncludingCut,
-  titleSlot, validateArgs, whereUsed,
+  TITLE_KEYS, getOp, nextShotNumber, polymorphicTarget, readMeta, rowLabel,
+  rowsIncludingCut, titleSlot, validateArgs, whereUsed,
   type EntityDef, type FieldDef, type Row, type ScfContext, type SqlValue,
 } from "@minimalhumans/scf-core";
 import { HostClientError } from "@minimalhumans/scf-host/client";
@@ -81,9 +81,14 @@ export interface Plan extends Draft {
   film: string;
   /** The revision this plan was made at, and will be applied at. */
   basedOn: number;
-  /** Integrity findings the host says this write would add. */
-  integrity: { wouldAdd: string[] };
-  /** True when applying would be refused (it would add findings). */
+  /**
+   * `wouldAdd`: blocking findings the host says this write would add.
+   * `noted`: questions it raises without being refused — a scene link for
+   * someone with no cue there, which is often right (spec §2.4.1).
+   */
+  integrity: { wouldAdd: string[]; noted: string[] };
+  /** True when applying would be refused (it would add blocking
+   *  findings). A noted question never sets it. */
   blocked: boolean;
   destructive: boolean;
   planId: string;
@@ -143,10 +148,18 @@ const UUID_LIKE =
  * Turn what the caller wrote into what the schema stores, refusing what
  * it would silently lose: an unknown field, a value outside a closed
  * vocabulary, a reference to nothing.
+ *
+ * A polymorphic reference (§12.1.2) is resolved too: the table it points
+ * into is read from its `polymorphicType` sibling — in this call's values,
+ * else on the row being updated (`existing`) — through
+ * `polymorphicTarget`. These were once passed through untouched, so a
+ * uuid given for `asset_relationship.entity_id` was stored as TEXT
+ * in an integer column: a link to nothing that no gate reported.
  */
 async function normalise(
     ctx: ScfContext, edef: EntityDef,
     input: Record<string, string | number | boolean | null>,
+    existing?: Row,
 ): Promise<Record<string, SqlValue>> {
   const byName = new Map(edef.fields.map((f) => [f.name, f]));
   const out: Record<string, SqlValue> = {};
@@ -158,21 +171,53 @@ async function normalise(
           [...byName.keys()].join(", ")}`);
     }
     let value: SqlValue = typeof raw === "boolean" ? (raw ? 1 : 0) : raw;
-    if (value !== null && field.referenceEntity !== undefined &&
-        field.polymorphicType === undefined && typeof value === "string" &&
-        UUID_LIKE.test(value)) {
+    const targetEntity = field.polymorphicType === undefined
+      ? field.referenceEntity
+      : polymorphicTargetOf(edef, field, input, existing);
+    if (value !== null && targetEntity !== undefined &&
+        typeof value === "string" && UUID_LIKE.test(value)) {
       const target = (await rowsIncludingCut(
-        ctx.exec, field.referenceEntity, "uuid = ?", [value]))[0];
+        ctx.exec, targetEntity, "uuid = ?", [value]))[0];
       if (target === undefined) {
-        throw new Error(`${name}: no ${field.referenceEntity} with uuid ` +
-                        `${value}`);
+        throw new Error(`${name}: no ${targetEntity} with uuid ${value}`);
       }
       value = Number(target["id"]);
+    } else if (typeof value === "string" && value !== "" &&
+               (field.referenceEntity !== undefined ||
+                field.polymorphicType !== undefined) &&
+               !/^\d+$/.test(value)) {
+      // Anything else written into a reference column would be stored as
+      // given and point at nothing.
+      throw new Error(`${name}: give the target's uuid, not "${value}"`);
     }
     assertInVocabulary(field, value);
     out[name] = value;
   }
   return out;
+}
+
+/**
+ * The table a polymorphic column points into for this write, or throws
+ * when the sibling naming it is unset or names a kind the column does not
+ * cover — a uuid cannot be resolved without knowing where to look.
+ */
+function polymorphicTargetOf(
+    edef: EntityDef, field: FieldDef,
+    input: Record<string, string | number | boolean | null>,
+    existing: Row | undefined): string {
+  const sibling = field.polymorphicType!;
+  const kind = sibling in input ? input[sibling] : existing?.[sibling];
+  if (kind === null || kind === undefined || kind === "") {
+    throw new Error(
+      `${field.name}: set ${sibling} too, so the uuid can be resolved`);
+  }
+  const target = polymorphicTarget(field, String(kind));
+  if (target === null || !registry.entities.has(target)) {
+    throw new Error(
+      `${field.name}: ${sibling} "${String(kind)}" names no entity type ` +
+      `${edef.name}.${field.name} can point into`);
+  }
+  return target;
 }
 
 function assertInVocabulary(field: FieldDef, value: SqlValue): void {
@@ -203,8 +248,8 @@ function explain(e: unknown): Error {
     case "integrity_gate":
       return new Error(
         `Refused: ${e.message}. Nothing was written. Fix the cause (for ` +
-        "instance by also adding the script line the link needs) and plan " +
-        "again.");
+        "instance by pointing the reference at a row that exists) and " +
+        "plan again.");
     case "external_change":
       return new Error(
         "The file was changed by another program while it was open, so " +
@@ -237,6 +282,7 @@ async function requireCurrentSchema(p: OpenProject): Promise<void> {
 async function makePlan(
     p: OpenProject, tool: string, draft: Draft): Promise<Plan> {
   let wouldAdd: string[] = [];
+  let noted: string[] = [];
   let destructive = false;
   if (draft.op !== null) {
     // Validated here, as the host would, so a bad argument is a plan-time
@@ -249,6 +295,7 @@ async function makePlan(
       dryRun: true, expectedRevision: p.revision,
     }).catch((e: unknown) => { throw explain(e); });
     wouldAdd = (dry.dryRun?.added ?? []).map((f) => f.description).sort();
+    noted = (dry.dryRun?.noted ?? []).map((f) => f.description).sort();
   }
   const risks = [...draft.risks];
   if (destructive) {
@@ -258,9 +305,18 @@ async function makePlan(
   if (wouldAdd.length > 0) {
     risks.push(`Would add integrity findings: ${wouldAdd.join("; ")}`);
   }
+  if (noted.length > 0) {
+    // One line however many there are: a pass that links a silent
+    // character to thirty scenes should not bury the other risks.
+    risks.push(
+      "Linked without a cue in the script. That is right for someone " +
+      "present and silent, and wrong for someone who is not there; " +
+      `confirm which: ${noted.join("; ")}`);
+  }
   const base: Omit<Plan, "planId"> = {
     ...draft, risks, tool, film: p.scfPath, basedOn: p.revision,
-    integrity: { wouldAdd }, blocked: wouldAdd.length > 0, destructive,
+    integrity: { wouldAdd, noted }, blocked: wouldAdd.length > 0,
+    destructive,
   };
   return { ...base, planId: await planIdOf(base) };
 }
@@ -439,7 +495,7 @@ export function registerWriteTools(on: WriteToolsOn): void {
       entityType: string; uuid: string; values: Record<string, Value> }) => {
       const edef = entityDef(entityType);
       const row = await rowByUuid(p.ctx, entityType, uuid);
-      const patch = await normalise(p.ctx, edef, values);
+      const patch = await normalise(p.ctx, edef, values, row);
       const fields: FieldChange[] = Object.entries(patch)
         .filter(([f, to]) => !same(row[f], to))
         .map(([field, to]) => ({ field, from: row[field], to }));

@@ -809,6 +809,13 @@ export interface ResolvedMedia {
   anchor_assets: Array<Row | null>;
   base_assets: Row[];
   assets_most_specific_first: Row[];
+  /**
+   * For an asset row above that stands in for a superseded one (§12.8,
+   * proposal 0039): the superseded row it replaced, keyed by the row
+   * object itself. Per occurrence, not per asset: two layers can reach
+   * one successor from different originals.
+   */
+  stands_in_for: Map<Row, Row>;
   trail: TrailEntry[];
   /**
    * Every binding of the requested intent and whether it applied, by row
@@ -817,6 +824,66 @@ export interface ResolvedMedia {
    */
   binding_verdicts: Array<{ id: number; applies: boolean;
                             reason: string | null }>;
+}
+
+/**
+ * §12.8: a superseded asset gives way to its successor.
+ *
+ * Follows `superseded_by_id` to the last asset on the forward version
+ * chain: the first row that is not `superseded`, or the last row the
+ * chain reaches where it simply stops. Returns the asset itself when it
+ * is not superseded, has no successor, points at a row that is not
+ * there, or sits on a cycle — the resolver is total (§9.2), and the
+ * `identity.*` codes report each of those. Returns null where the
+ * successor is CUT: §6.6.1 excludes it like any cut row, and the
+ * reference is dropped, not walked back.
+ *
+ * This is substitution, not exclusion. Q15 still walks the whole chain.
+ */
+async function successorInForce(
+    ctx: ScfContext, asset: Row): Promise<Row | null> {
+  if (asset["lifecycle_status"] !== "superseded") return asset;
+  const visited = new Set<number>([asNum(asset["id"]) ?? -1]);
+  let at = asset;
+  while (at["lifecycle_status"] === "superseded") {
+    const next = asNum(at["superseded_by_id"]);
+    if (next === null) break;                    // the chain stops here
+    if (visited.has(next)) return asset;         // a cycle has no last row
+    const row = (await rowsIncludingCut(
+      ctx.exec, "asset", "id = ?", [next]))[0];
+    if (row === undefined) break;                // dangling: stay put
+    visited.add(next);
+    at = row;
+  }
+  if (at["lifecycle_status"] === "cut") return null;
+  return at;
+}
+
+/**
+ * Apply `successorInForce` to one layer's assets, in place of each
+ * superseded one. The successor keeps what the LAYER said about the
+ * original — its `role_in_bundle` — because the layer placed a file in
+ * a role, and the newer file inherits the place.
+ */
+async function givingWay<T extends Row | null>(
+    ctx: ScfContext, layer: T[], standsInFor: Map<Row, Row>,
+    drop: "remove" | "null"): Promise<T[]> {
+  const out: T[] = [];
+  for (const asset of layer) {
+    if (asset === null) { out.push(asset); continue; }
+    const successor = await successorInForce(ctx, asset);
+    if (successor === asset) { out.push(asset); continue; }
+    if (successor === null) {
+      if (drop === "null") out.push(null as T);
+      continue;
+    }
+    const standIn: Row = "role_in_bundle" in asset
+      ? { ...successor, role_in_bundle: asset["role_in_bundle"] ?? null }
+      : { ...successor };
+    standsInFor.set(standIn, asset);
+    out.push(standIn as T);
+  }
+  return out;
 }
 
 /**
@@ -972,19 +1039,31 @@ export async function resolveMedia(
     }
   }
 
-  const overrideIds = new Set(overrideAssets.map((x) => x["id"]));
+  // A superseded asset gives way to its successor (§12.8), after the
+  // layers are walked and before anything is deduplicated: the
+  // at-most-once rule then sees the successor, so one another layer
+  // already carries appears once, under the stronger layer.
+  const standsInFor = new Map<Row, Row>();
+  const overrides = await givingWay(ctx, overrideAssets, standsInFor,
+                                    "remove");
+  // Aligned with `anchors` by index, so a dropped one leaves its slot.
+  const anchored = await givingWay(ctx, anchorAssets, standsInFor, "null");
+  const base = await givingWay(ctx, baseAssets, standsInFor, "remove");
+
+  const overrideIds = new Set(overrides.map((x) => x["id"]));
   return {
     subject,
     subject_id: subjectId,
     intent,
-    override_assets: overrideAssets,
+    override_assets: overrides,
     anchors,
-    anchor_assets: anchorAssets,
-    base_assets: baseAssets,
+    anchor_assets: anchored,
+    base_assets: base,
     assets_most_specific_first: [
-      ...overrideAssets,
-      ...baseAssets.filter((a) => !overrideIds.has(a["id"])),
+      ...overrides,
+      ...base.filter((a) => !overrideIds.has(a["id"])),
     ],
+    stands_in_for: standsInFor,
     trail,
     binding_verdicts: verdicts,
   };

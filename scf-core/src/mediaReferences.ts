@@ -57,6 +57,17 @@ export interface AssetReference {
   /** Why, for anything that is not `resolved`. */
   detail: string | null;
   sizeBytes: number | null;
+  /**
+   * The asset's `lifecycle_status`, unset read as `active` (§12.8). A
+   * `deprecated`, `archived` or `draft` asset stays in force; this is
+   * what lets a consumer see that and choose.
+   */
+  lifecycleStatus: string;
+  /**
+   * The uuid of the superseded asset this reference stands in for,
+   * where §12.8 replaced one with its successor. Null otherwise.
+   */
+  supersedes: string | null;
 }
 
 export interface ResolutionSummary {
@@ -128,6 +139,7 @@ export async function mediaReferences(
       if (seen.has(id)) continue;
       seen.add(id);
 
+      const replaced = media.stands_in_for.get(row);
       const identifier = str(row, "identifier");
       const resolution = await resolveIdentifier(identifier, locate);
       counts[resolution.state] += 1;
@@ -150,6 +162,8 @@ export async function mediaReferences(
         state: resolution.state,
         detail: resolution.detail,
         sizeBytes: resolution.sizeBytes,
+        lifecycleStatus: str(row, "lifecycle_status") ?? "active",
+        supersedes: replaced === undefined ? null : str(replaced, "uuid"),
       });
     }
   }
@@ -203,6 +217,8 @@ export function referencesMarkdown(
     const bits = [r.identifier ?? "(no identifier)"];
     if (r.role !== null) bits.push(r.role);
     bits.push(r.provenance);
+    if (r.lifecycleStatus !== "active") bits.push(r.lifecycleStatus);
+    if (r.supersedes !== null) bits.push("replaces an earlier version");
     if (r.state !== "resolved") bits.push(r.state);
     return `- ${r.name ?? `#${r.id}`} — ${bits.join(" · ")}`;
   });

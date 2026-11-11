@@ -15,7 +15,7 @@
   ; Quote the executable path in the shell command and icon registration
   ; (Tauri's default APP_ASSOCIATE macro leaves $INSTDIR unquoted, which
   ; contains a space in "SCF Editor").
-  WriteRegStr SHCTX "Software\Classes\SCFEditor.scf\DefaultIcon" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\",0"
+  WriteRegStr SHCTX "Software\Classes\SCFEditor.scf\DefaultIcon" "" "$\"$INSTDIR\docIcon.ico$\",0"
   WriteRegStr SHCTX "Software\Classes\SCFEditor.scf\shell\open\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\""
 
   ; Notify Explorer so open windows immediately refresh .scf extension visibility.

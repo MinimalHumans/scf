@@ -263,6 +263,35 @@ const CASES = [
     },
   },
   {
+    name: "reference-dangling",
+    about:
+      "Three references that are filled and name no row: an ordinary " +
+      "one (a cast link to character 404), a polymorphic one (a " +
+      "thematic connection to character 404, found through its " +
+      "`entity_type` sibling, §12.1.2), and a uuid stored as text in " +
+      "an integer reference column, which is what a writer that skips " +
+      "the uuid-to-row-id step leaves behind. Each is " +
+      "`reference.dangling` (§9.1): one finding per column. None is " +
+      "`junction.endpoint_absent`, because the column is not empty; " +
+      "every query still answers (§9.2), and the link is not there.",
+    damage: async (exec) => {
+      await exec("INSERT INTO scene (name, scene_number, uuid) " +
+                 "VALUES ('INT. KITCHEN', '1', ?)", [uuid(1)]);
+      await exec("INSERT INTO scene_character (scene_id, character_id, uuid) " +
+                 "VALUES (1, 404, ?)", [uuid(2)]);
+      await exec("INSERT INTO theme (name, uuid) VALUES ('Guilt', ?)",
+                 [uuid(3)]);
+      await exec(
+        "INSERT INTO thematic_connection (theme_id, entity_type, " +
+        "entity_id, uuid) VALUES (1, 'character', 404, ?)", [uuid(4)]);
+      await exec("INSERT INTO motif (name, modality, uuid) " +
+                 "VALUES ('The locket', 'visual', ?)", [uuid(5)]);
+      await exec(
+        "INSERT INTO motif_appearance (motif_id, entity_type, entity_id, " +
+        "uuid) VALUES (1, 'scene', ?, ?)", [uuid(1), uuid(6)]);
+    },
+  },
+  {
     name: "asset-orphans-two",
     about:
       "Two assets nothing references. One condition on one table is one " +

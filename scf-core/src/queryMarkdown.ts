@@ -150,7 +150,27 @@ function dossierMarkdown(registry: Registry, d: Q01Result): string[] {
     section("Thematic connections", d.thematicConnections.map((t) =>
       `- ${field(t, "nature_of_connection") ?? "connected"}` +
       ` (subtlety: ${field(t, "subtlety_level") ?? "—"})`)),
+    section("Relationships", d.relationships.map(relationshipLine)),
   ];
+}
+
+/**
+ * `- Marcus Cade: family, brother (mutual)`. The direction is read from
+ * the subject's own end: `a_to_b` runs A → B (§6.5), so from side "b"
+ * it arrives rather than leaves.
+ */
+function relationshipLine(r: Q01Result["relationships"][number]): string {
+  const kind = [field(r.relationship, "relationship_type"),
+                field(r.relationship, "specific_relationship")]
+    .filter((v): v is string => v !== null).join(", ");
+  const direction = field(r.relationship, "directionality");
+  const reads = direction === "a_to_b"
+    ? (r.side === "a" ? "from this character to them"
+                      : "from them to this character")
+    : direction === "mutual" ? "mutual" : null;
+  return `- ${nameOf(r.other, "(someone not in this file)")}` +
+    (kind !== "" ? `: ${kind}` : "") +
+    (reads !== null ? ` (${reads})` : "");
 }
 
 function cascadeMarkdown(name: string, p: Q07Result): string {

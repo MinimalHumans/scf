@@ -61,16 +61,18 @@ fn connect() -> Option<(TcpStream, String)> {
     Some((stream, token))
 }
 
-/// Ask an already-running app, if any, to raise its window. `None`
-/// means none was found — safe to start one. `Some(true)` means it
-/// confirmed. `Some(false)` means it is there (the socket accepted the
-/// connection) but never confirmed — frozen, most likely — and this
-/// process must not start a second engine on top of it regardless.
-pub fn raise_existing() -> Option<bool> {
+/// Ask an already-running app, if any, to raise its window — and, if
+/// this launch was given a file to open (a `.scf` double-click), to
+/// open that too. `None` means none was found — safe to start one.
+/// `Some(true)` means it confirmed. `Some(false)` means it is there
+/// (the socket accepted the connection) but never confirmed — frozen,
+/// most likely — and this process must not start a second engine on
+/// top of it regardless.
+pub fn raise_existing(open: Option<&str>) -> Option<bool> {
     let (stream, token) = connect()?;
     let _ = stream.set_read_timeout(Some(RAISE_TIMEOUT));
     let mut to_app = stream.try_clone().ok()?;
-    let hello = serde_json::json!({ "token": token, "raise": true });
+    let hello = serde_json::json!({ "token": token, "raise": true, "open": open });
     if writeln!(to_app, "{hello}").is_err() {
         return Some(false);
     }

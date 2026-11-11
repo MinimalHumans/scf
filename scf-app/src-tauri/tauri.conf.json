@@ -41,7 +41,8 @@
     "publisher": "Minimal Humans",
     "resources": {
       "../../LICENSE": "LICENSE",
-      "../../NOTICE": "NOTICE"
+      "../../NOTICE": "NOTICE",
+      "icons/docIcon.ico": "docIcon.ico"
     },
     "fileAssociations": [
       {

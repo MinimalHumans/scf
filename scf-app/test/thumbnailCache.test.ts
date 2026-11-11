@@ -42,8 +42,9 @@ vi.mock("../src/files/assetLocator.ts", () => ({
   },
 }));
 
-const { clearResolutions, clearStoredThumbnails, resolveCached,
-        thumbnailFor } =
+const { PREVIEW_WIDTHS, TILE_THUMB_PX, clearResolutions,
+        clearStoredThumbnails, galleryPreviewFor, previewWidthFor,
+        resolveCached, thumbnailFor } =
   await import("../src/files/thumbnailCache.ts");
 
 const ROOT = "/projects/p";
@@ -167,6 +168,19 @@ describe("thumbnailFor", () => {
     expect(crop?.regionApplied).toBe(true);
   });
 
+  // A tile draws the picture several times larger than a slot. Serving
+  // it the slot's raster is what made tiles look soft.
+  test("a tile-sized thumbnail is a different entry from the slot's",
+       async () => {
+    const slot = await thumbnailFor(ROOT, "a.png", RES("t1", 10), null);
+    const tile = await thumbnailFor(ROOT, "a.png", RES("t1", 10), null,
+                                    TILE_THUMB_PX);
+    expect(io.files).toBe(2);
+    expect(tile?.dataUrl).not.toBe(slot?.dataUrl);
+    await thumbnailFor(ROOT, "a.png", RES("t1", 10), null, TILE_THUMB_PX);
+    expect(io.files).toBe(2);
+  });
+
   // A box measured against a different file. Reported, not clamped —
   // the caller shows "region does not fit" rather than presenting a
   // corner of this image as the thing the anchor names.
@@ -191,5 +205,35 @@ describe("thumbnailFor", () => {
     expect(globalThis.indexedDB).toBeUndefined();
     expect(await thumbnailFor(ROOT, "a.png", RES("t1", 10), null))
       .not.toBeNull();
+  });
+});
+
+describe("previews sized for where they are drawn", () => {
+  test("the width covers the drawn size in device pixels", () => {
+    // 250 CSS pixels on a 1x display fits the smallest preset.
+    expect(previewWidthFor(250, 1)).toBe(340);
+    // The same column on a 150% display needs 375 device pixels, which
+    // the smallest preset would have to be stretched to cover.
+    expect(previewWidthFor(250, 1.5)).toBe(500);
+    // A column that has stretched well past its minimum, at 2x.
+    expect(previewWidthFor(420, 2)).toBe(1140);
+  });
+
+  test("it is always a preset, however large or odd the request", () => {
+    for (const [css, dpr] of [[1, 1], [333, 1.25], [5000, 3], [0, 0],
+                              [200, Number.NaN]] as const) {
+      expect(PREVIEW_WIDTHS).toContain(previewWidthFor(css, dpr));
+    }
+    expect(previewWidthFor(5000, 3))
+      .toBe(PREVIEW_WIDTHS[PREVIEW_WIDTHS.length - 1]);
+  });
+
+  test("each width is its own entry, generated once", async () => {
+    const small = await galleryPreviewFor(ROOT, "a.png", RES("t1", 10), 340);
+    const large = await galleryPreviewFor(ROOT, "a.png", RES("t1", 10), 760);
+    expect(io.files).toBe(2);
+    expect(large?.dataUrl).not.toBe(small?.dataUrl);
+    await galleryPreviewFor(ROOT, "a.png", RES("t1", 10), 760);
+    expect(io.files).toBe(2);
   });
 });

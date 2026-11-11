@@ -17,14 +17,91 @@ time, so that a reader of an old spec knows what it was describing.
 
 ---
 
-## Unreleased
+## 1.0-rc.8 - 2026-11-11
 
 *Describes schema 2.25.*
 
-**Editorial.** No requirement changes, no schema change, and no result
-or report changes. `stability.md` names the files where the editor's
+**Editorial.** `stability.md` names the files where the editor's
 operations now live in scf-core, and `api-surface.json` is regenerated
 for what scf-core now exports.
+
+**Three proposals from production use**, all found on real films after
+rc.7 and all taken under §11.0, which still holds. Each adds or changes
+a requirement, so under §11.5 this is a **minor** change and the next
+candidate carries it. **No registry change; schema stays 2.25.** Every
+published query result is re-blessed, because `resultFormat` moves to
+`1.1`; the fixture is unchanged.
+
+### §12.8 — a superseded asset gives way to its successor (proposal 0039)
+
+- **A reference whose asset is `superseded` names its successor
+  instead**: the last asset on the forward version chain, reached by
+  following `superseded_by_id`. The successor keeps the layer's
+  `provenance`, `role` and `anchorName`. Q13 had gone on returning a
+  replaced character sheet as `resolved`, beside the sheet that
+  replaced it, and a film with 95 superseded assets out of 213 had no
+  way to tell from the result. The at-most-once rule applies after the
+  substitution. A superseded asset with no successor, a dangling
+  pointer and a cycle each leave the reference as it is (§9.2). A cut
+  successor drops the reference. This is substitution, not exclusion:
+  §6.6.1 is untouched, Q15 still walks the chain, and §6.6 gains one
+  sentence pointing here.
+- **Every reference gains two members**: `lifecycleStatus`, the asset's
+  status with unset read as `active`, and `supersedes`, the uuid of the
+  asset it stands in for or null. `deprecated`, `archived` and `draft`
+  stay in force and are now visible.
+- **`resultFormat` is `1.1`** (§12.1.1), for these members and for
+  Q01's below. Q14's media and Q02's `media` change with Q13.
+- **The published results do not exercise the substitution.** The
+  fixture's one chain leaves v1 `active` and unbound, so every
+  published `supersedes` is null. `supersededGivesWay.test.ts` pins the
+  rule on a copy of the fixture; `stability.md` records the gap.
+
+### §9.1, §9.4.1 — `reference.dangling` (proposal 0040)
+
+- **New code `reference.dangling`**, `warning`: a reference column
+  holds a non-empty value that names no row of its target, cut or not.
+  It covers ordinary and polymorphic references, required and optional.
+  A value that is not an integer names no row, which is what a writer
+  that skips the uuid-to-row-id step leaves behind. Where
+  `relationship.endpoint_absent` or `structure.boundary_dangling`
+  covers the column, that code is raised instead; the version columns
+  are left to the `identity.*` codes. One finding per column.
+- **§12.1.2** no longer says a polymorphic reference to an absent row
+  is "not a finding". The query's answer is unchanged, a null
+  `targetUuid`; the report now carries the code.
+- **Catalog version 1.1, 55 codes.** New negative case
+  `reference-dangling`, nineteen in all. The fixture's own report is
+  unchanged: it has no dangling reference.
+- Not covered, and still reported by nothing: a polymorphic column
+  whose sibling names no registry entity.
+
+### §2.4.1 — a presence link is authored (proposal 0041)
+
+- **A `scene_character` or `scene_prop` row is valid whether or not the
+  subject has a cue in the scene, and a writer MUST NOT refuse it on
+  that ground.** A link and the script may disagree; that is a question
+  an authoring tool MAY ask, never a finding. The reference host
+  refused 94 such links on one film: its write gate had promoted an
+  editor review aid to a hard block, against §2.4.1's own definition of
+  `named` presence and against §9.1.
+
+### §12.15, §12.16, §6.5 — relationships in the dossier (proposal 0041)
+
+- **Q01 gains `relationships`**: for a character, each
+  `character_relationship` naming them in either column, as
+  `{relationship, other, side}`. `character_relationship` has no
+  `character_id` column, so the group walk never found it, and neither
+  Q01 nor Q02 said who a relationship was with or which way it read. A
+  relationship to a cut character is absent; one whose other end is not
+  in the file is kept with `other` null; one naming the subject twice
+  appears once, as side `"a"`. Any other subject kind carries `[]`.
+- **Q02 carries it through `dossier`**, and §12.16 now says that
+  `relationshipStates` holds the stages and not the relationships.
+  §6.5 cites Q01 as the worked example of reading both columns.
+- Seven published results gain the member: `Q01` and `Q02` (three
+  entries each, Eleanor on side `"a"`), `Q02-marcus-scene25` (two, one
+  on each side) and the four non-character Q02 cases (`[]`).
 
 ## 1.0-rc.7 — 2026-10-20
 
