@@ -6,6 +6,14 @@ The editor ships on its own version line, separate from the spec
 desktop release workflow copies that section into the GitHub release
 notes.
 
+## 0.2.5
+
+- **Changed:** MCP writes are much faster for batch edits, such as
+  updating several shot descriptions in one call. Writes take
+  field-shaped values and can be batched with row-scoped plans
+  (proposals 42 and 43). A row change that would cause a conflict is
+  still rejected.
+
 ## 0.2.4
 
 Rebuild of 0.2.3 with a fix to the release workflow: the Linux build

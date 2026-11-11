@@ -1,6 +1,6 @@
 {
   "name": "@minimalhumans/scf-app",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "The SCF reference editor: a local-first desktop app whose window owns its files and serves the MCP.",
   "private": true,
   "license": "Apache-2.0",
