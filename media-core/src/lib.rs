@@ -45,7 +45,7 @@ pub use proc_tail::redact_paths;
 pub use probe::{probe, ProbeCache, ProbeResult};
 pub use still_convert::{spawn_still_render, wait_still, SpawnedStill, StillRenderArgs};
 pub use still_probe::{
-    probe_magick, probe_oiiotool, resolve_still_selection, StillProbeCache, StillProbeResult,
+    probe_ffprobe, probe_magick, probe_oiiotool, resolve_still_selection, StillProbeCache, StillProbeResult,
     StillSelection,
 };
 pub use verdict::{classify, classify_still, Verdict};

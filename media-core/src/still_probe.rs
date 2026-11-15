@@ -165,6 +165,22 @@ pub fn probe_magick(magick_path: &Path, file: &Path) -> Result<StillProbeResult,
     Ok(parse_magick_identify(first))
 }
 
+/// ffprobe as a still-image probe, for the ffmpeg render backend:
+/// dimensions only (no layer structure — ffmpeg's EXR decoder renders
+/// its default layer, and there's no picker over it). A file ffprobe
+/// can open but finds no picture in is an error here, not an empty
+/// result, so the caller falls through to the next converter.
+pub fn probe_ffprobe(ffprobe_path: &Path, file: &Path) -> Result<StillProbeResult, String> {
+    let probed = crate::probe::probe(ffprobe_path, file)?;
+    if probed.width.is_none() || probed.height.is_none() {
+        return Err("ffprobe found no image in this file".to_string());
+    }
+    Ok(StillProbeResult {
+        width: probed.width, height: probed.height,
+        layers: Vec::new(), channels: Vec::new(), multipart: false,
+    })
+}
+
 /// `"test.tiff TIFF 32x32 32x32+0+0 16-bit sRGB 6408B ..."` -> the
 /// geometry token right after the format name (the second `WxH`, with
 /// a `+x+y` offset, is the page geometry — same numbers, skip it).
@@ -259,6 +275,12 @@ impl StillProbeCache {
 
     pub fn probe_magick(&self, backend_path: &Path, file: &Path) -> Probed {
         self.probe("magick", backend_path, file, probe_magick)
+    }
+
+    /// `ffprobe_path`, not ffmpeg's own — the render backend id is
+    /// `"ffmpeg"` but the probing tool is ffprobe.
+    pub fn probe_ffmpeg(&self, ffprobe_path: &Path, file: &Path) -> Probed {
+        self.probe("ffmpeg", ffprobe_path, file, probe_ffprobe)
     }
 
     fn probe(

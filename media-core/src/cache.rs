@@ -233,6 +233,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     add_column_if_missing(conn, "jobs", "backend_id", "TEXT")?;
     add_column_if_missing(conn, "jobs", "input_path", "TEXT")?;
     add_column_if_missing(conn, "jobs", "stderr_tail", "TEXT")?;
+    // Which backend produced an entry — provenance only, nothing reads
+    // it for decisions. NULL for entries written before this existed.
+    add_column_if_missing(conn, "entries", "backend_id", "TEXT")?;
     Ok(())
 }
 
@@ -257,6 +260,9 @@ fn add_column_if_missing(
 pub struct EntryInfo {
     pub path_on_disk: String,
     pub bytes: u64,
+    /// The backend that produced this entry; `None` for entries cached
+    /// before provenance was recorded.
+    pub backend_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -363,11 +369,12 @@ impl Cache {
     pub fn get_entry(&self, key: &str) -> Option<EntryInfo> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT path_on_disk, bytes FROM entries WHERE key = ?1",
+            "SELECT path_on_disk, bytes, backend_id FROM entries WHERE key = ?1",
             [key],
             |row| Ok(EntryInfo {
                 path_on_disk: row.get(0)?,
                 bytes: row.get::<_, i64>(1)? as u64,
+                backend_id: row.get(2)?,
             }),
         )
         .optional()
@@ -384,16 +391,17 @@ impl Cache {
         );
     }
 
-    pub fn put_entry(&self, key: &str, path_on_disk: &str, bytes: u64, kind: &str) {
+    pub fn put_entry(&self, key: &str, path_on_disk: &str, bytes: u64, kind: &str, backend_id: &str) {
         let conn = self.conn.lock().unwrap();
         let t = now();
         let _ = conn.execute(
-            "INSERT INTO entries (key, path_on_disk, bytes, kind, created_at, last_access, hit_count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0)
+            "INSERT INTO entries (key, path_on_disk, bytes, kind, created_at, last_access, hit_count, backend_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, ?6)
              ON CONFLICT(key) DO UPDATE SET
                path_on_disk = excluded.path_on_disk, bytes = excluded.bytes,
-               kind = excluded.kind, last_access = excluded.last_access",
-            rusqlite::params![key, path_on_disk, bytes as i64, kind, t],
+               kind = excluded.kind, last_access = excluded.last_access,
+               backend_id = excluded.backend_id",
+            rusqlite::params![key, path_on_disk, bytes as i64, kind, t, backend_id],
         );
     }
 
@@ -469,6 +477,13 @@ impl Cache {
             "UPDATE jobs SET state = 'running', started_at = ?1 WHERE id = ?2",
             rusqlite::params![now(), id],
         );
+    }
+
+    /// A still job that fell through to its next converter: the job row
+    /// keeps naming whichever backend is actually running it.
+    pub fn set_job_backend(&self, id: &str, backend_id: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute("UPDATE jobs SET backend_id = ?1 WHERE id = ?2", rusqlite::params![backend_id, id]);
     }
 
     pub fn set_job_done(&self, id: &str) {
@@ -682,15 +697,18 @@ impl Cache {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KindStats {
     pub count: u64,
     pub bytes: u64,
     pub hits: u64,
+    /// Entry count per producing backend; entries with no recorded
+    /// backend (cached before provenance existed) are under `"unknown"`.
+    pub by_backend: std::collections::BTreeMap<String, u64>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheStats {
     pub video: KindStats,
@@ -703,14 +721,28 @@ fn kind_stats_locked(conn: &Connection, kinds: &[&str]) -> KindStats {
          FROM entries WHERE kind IN ({})",
         kinds_placeholders(kinds, 1),
     );
-    conn.query_row(&sql, rusqlite::params_from_iter(kinds.iter()), |row| {
+    let mut stats = conn.query_row(&sql, rusqlite::params_from_iter(kinds.iter()), |row| {
         Ok(KindStats {
             count: row.get::<_, i64>(0)? as u64,
             bytes: row.get::<_, i64>(1)? as u64,
             hits: row.get::<_, i64>(2)? as u64,
+            by_backend: Default::default(),
         })
     })
-    .unwrap_or_default()
+    .unwrap_or_default();
+    let by_backend_sql = format!(
+        "SELECT COALESCE(backend_id, 'unknown'), COUNT(*) FROM entries \
+         WHERE kind IN ({}) GROUP BY 1",
+        kinds_placeholders(kinds, 1),
+    );
+    if let Ok(mut stmt) = conn.prepare(&by_backend_sql) {
+        if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(kinds.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+        }) {
+            stats.by_backend = rows.filter_map(Result::ok).collect();
+        }
+    }
+    stats
 }
 
 /// `project_id`'s own usage-accounting primitive, taking an already-
@@ -899,10 +931,11 @@ mod tests {
     fn an_entry_round_trips_and_touch_updates_hit_count() {
         let (cache, _dir) = temp_cache("entries");
         assert!(cache.get_entry("k1").is_none());
-        cache.put_entry("k1", "C:/cache/k1.mp4", 1234, "transcode");
+        cache.put_entry("k1", "C:/cache/k1.mp4", 1234, "transcode", "ffmpeg");
         let entry = cache.get_entry("k1").unwrap();
         assert_eq!(entry.path_on_disk, "C:/cache/k1.mp4");
         assert_eq!(entry.bytes, 1234);
+        assert_eq!(entry.backend_id.as_deref(), Some("ffmpeg"));
         cache.touch_entry("k1");
         cache.touch_entry("k1");
         // No public read of hit_count yet (nothing in this phase needs
@@ -913,8 +946,8 @@ mod tests {
     #[test]
     fn putting_the_same_key_twice_replaces_rather_than_duplicates() {
         let (cache, _dir) = temp_cache("entries-replace");
-        cache.put_entry("k1", "C:/cache/old.mp4", 100, "remux");
-        cache.put_entry("k1", "C:/cache/new.mp4", 200, "remux");
+        cache.put_entry("k1", "C:/cache/old.mp4", 100, "remux", "ffmpeg");
+        cache.put_entry("k1", "C:/cache/new.mp4", 200, "remux", "ffmpeg");
         let entry = cache.get_entry("k1").unwrap();
         assert_eq!(entry.path_on_disk, "C:/cache/new.mp4");
         assert_eq!(entry.bytes, 200);
@@ -1051,7 +1084,7 @@ mod tests {
         let path = dir.join("entries").join(format!("{key}.bin"));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, vec![0u8; bytes as usize]).unwrap();
-        cache.put_entry(key, &path.display().to_string(), bytes, kind);
+        cache.put_entry(key, &path.display().to_string(), bytes, kind, "ffmpeg");
         path
     }
 
@@ -1215,6 +1248,40 @@ mod tests {
         assert_eq!(stats.stills.count, 1);
         assert_eq!(stats.stills.bytes, 50);
         assert_eq!(stats.stills.hits, 0);
+    }
+
+    #[test]
+    fn a_pre_provenance_entry_reads_back_with_no_backend_and_counts_as_unknown() {
+        let (cache, dir) = temp_cache("provenance-legacy");
+        put_real_entry(&cache, &dir.path, "old", "render", 10);
+        {
+            let conn = cache.conn.lock().unwrap();
+            conn.execute("UPDATE entries SET backend_id = NULL WHERE key = 'old'", []).unwrap();
+        }
+        put_real_entry(&cache, &dir.path, "new", "render", 10);
+        assert_eq!(cache.get_entry("old").unwrap().backend_id, None);
+        let by = cache.stats().stills.by_backend;
+        assert_eq!(by.get("unknown"), Some(&1));
+        assert_eq!(by.get("ffmpeg"), Some(&1));
+    }
+
+    #[test]
+    fn migrating_a_database_from_before_the_backend_column_keeps_its_entries() {
+        let dir = TempCacheDir::new("provenance-migrate");
+        {
+            let conn = Connection::open(dir.path.join("cache.db")).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE entries (
+                   key TEXT PRIMARY KEY, path_on_disk TEXT NOT NULL, bytes INTEGER NOT NULL,
+                   kind TEXT NOT NULL, created_at INTEGER NOT NULL, last_access INTEGER NOT NULL,
+                   hit_count INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO entries VALUES ('k', 'p', 5, 'render', 1, 1, 0);",
+            ).unwrap();
+        }
+        let cache = Cache::open(dir.path.clone()).unwrap();
+        let entry = cache.get_entry("k").unwrap();
+        assert_eq!(entry.bytes, 5);
+        assert_eq!(entry.backend_id, None);
     }
 
     #[test]

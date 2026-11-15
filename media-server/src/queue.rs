@@ -247,6 +247,17 @@ pub struct StillRenderRequest {
     pub height: Option<u32>,
 }
 
+/// One converter a still render may fall through to if the converters
+/// ahead of it fail on the file: its own cache key (the key embeds the
+/// backend), path, and the selection/dimensions its own probe produced.
+#[derive(Clone)]
+pub struct StillFallback {
+    pub key: String,
+    pub backend_id: String,
+    pub backend: PathBuf,
+    pub still: StillRenderRequest,
+}
+
 pub struct EnqueueRequest<'a> {
     pub key: &'a str,
     pub priority: &'a str,
@@ -264,6 +275,10 @@ pub struct EnqueueRequest<'a> {
     /// request (it already needs it for the cache key) and hands it
     /// straight through rather than this module re-deriving it.
     pub derived_params: DerivedParams,
+    /// Still renders only: the converters to try, in order, if this one
+    /// fails on the file. Empty for video, and for a still with nothing
+    /// else to try.
+    pub fallbacks: Vec<StillFallback>,
 }
 
 /// Phase 8: everything [`Queue::spawn_run`] needs, owned rather than
@@ -282,6 +297,7 @@ struct PendingSpec {
     duration_secs: Option<f64>,
     still: Option<StillRenderRequest>,
     derived_params: DerivedParams,
+    fallbacks: Vec<StillFallback>,
 }
 
 impl PendingSpec {
@@ -291,7 +307,7 @@ impl PendingSpec {
             input: req.input.to_path_buf(), verdict: req.verdict,
             backend_id: req.backend_id.to_string(), backend: req.backend.to_path_buf(),
             duration_secs: req.duration_secs, still: req.still.clone(),
-            derived_params: req.derived_params.clone(),
+            derived_params: req.derived_params.clone(), fallbacks: req.fallbacks.clone(),
         }
     }
 
@@ -300,6 +316,7 @@ impl PendingSpec {
             key: &self.key, priority: &self.priority, input: &self.input, verdict: self.verdict,
             backend_id: &self.backend_id, backend: &self.backend, duration_secs: self.duration_secs,
             still: self.still.clone(), derived_params: self.derived_params.clone(),
+            fallbacks: self.fallbacks.clone(),
         }
     }
 }
@@ -459,11 +476,17 @@ impl Queue {
         let key = req.key.to_string();
         let input = req.input.to_path_buf();
         let verdict = req.verdict;
-        let backend_id = req.backend_id.to_string();
-        let backend = req.backend.to_path_buf();
         let duration_secs = req.duration_secs;
-        let still = req.still;
         let derived_params = req.derived_params;
+        // The requested converter first, then whatever it may fall
+        // through to (stills only; empty for video).
+        let mut attempts = vec![Attempt {
+            key: key.clone(), backend_id: req.backend_id.to_string(),
+            backend: req.backend.to_path_buf(), still: req.still,
+        }];
+        attempts.extend(req.fallbacks.into_iter().map(|f| Attempt {
+            key: f.key, backend_id: f.backend_id, backend: f.backend, still: Some(f.still),
+        }));
         let priority = Priority::parse(req.priority);
         let pool = pool_of(verdict);
         let semaphore = match pool {
@@ -487,10 +510,7 @@ impl Queue {
             let id_for_run = id.clone();
             let queue_for_run = queue.clone();
             let result = tokio::task::spawn_blocking(move || {
-                run_conversion(&queue_for_run, &id_for_run, ConversionJob {
-                    backend_id: &backend_id, backend: &backend, input: &input,
-                    verdict, duration_secs, still, derived_params: &derived_params,
-                })
+                run_attempts(&queue_for_run, &id_for_run, &input, verdict, duration_secs, &derived_params, attempts)
             })
             .await;
 
@@ -510,10 +530,14 @@ impl Queue {
             }
 
             match result {
-                Ok(Ok(())) => {
-                    let path = queue.cache.entry_path(&key, output_ext(verdict));
+                Ok(Ok(won)) => {
+                    // The entry belongs to whichever converter actually
+                    // produced it, which for a still may not be the one
+                    // the job started with.
+                    let path = queue.cache.entry_path(&won.key, output_ext(verdict));
                     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                    queue.cache.put_entry(&key, &path.display().to_string(), bytes, kind_str(verdict));
+                    queue.cache.put_entry(
+                        &won.key, &path.display().to_string(), bytes, kind_str(verdict), &won.backend_id);
                     queue.cache.set_job_done(&id);
                     queue.pending.lock().unwrap().remove(&id);
                 }
@@ -523,9 +547,10 @@ impl Queue {
                     // synchronously, before this task's kill even
                     // resolved — never downgrade that back to `failed`
                     // just because the killed process's own exit looks
-                    // like any other failure from here.
+                    // like any other failure from here. (The negative
+                    // cache entries for real failures were already
+                    // recorded per converter by `run_attempts`.)
                     if queue.cache.get_job(&id).map(|j| j.state) != Some(JobState::Cancelled) {
-                        queue.cache.record_failure(&key, &f.message);
                         queue.cache.set_job_failed(&id, &f.message, f.stderr_tail.as_deref());
                     }
                     queue.pending.lock().unwrap().remove(&id);
@@ -588,10 +613,67 @@ impl Queue {
     }
 }
 
+/// One converter's turn at a job: the cache key its output will be
+/// stored under (the key embeds the backend, so each converter has its
+/// own), and what to run.
+struct Attempt {
+    key: String,
+    backend_id: String,
+    backend: PathBuf,
+    still: Option<StillRenderRequest>,
+}
+
+/// The converter whose output is now in the cache.
+struct Won {
+    key: String,
+    backend_id: String,
+}
+
+/// Runs a job's converters in order until one succeeds. A converter that
+/// fails on the file gets its own negative-cache entry (so a later
+/// request skips straight past it) and the next one is tried — the
+/// failover the still pipeline's per-format converter lists promise.
+/// On total failure the *first* converter's failure is the one reported:
+/// the preferred tool's error is the most informative one.
+///
+/// A converter killed on purpose (preempted, or cancelled by the user)
+/// didn't fail on the file: that stops everything, records nothing, and
+/// leaves `spawn_run`'s own preempt/cancel handling to take over.
+fn run_attempts(
+    queue: &Queue, job_id: &str, input: &Path, verdict: Verdict, duration_secs: Option<f64>,
+    derived_params: &DerivedParams, attempts: Vec<Attempt>,
+) -> Result<Won, Failure> {
+    let mut first_failure: Option<Failure> = None;
+    for (i, attempt) in attempts.iter().enumerate() {
+        if i > 0 {
+            queue.cache.set_job_backend(job_id, &attempt.backend_id);
+            let _ = std::fs::remove_file(queue.cache.tmp_path(job_id)); // the failed try's leftovers
+        }
+        let result = run_conversion(queue, job_id, ConversionJob {
+            key: &attempt.key, backend_id: &attempt.backend_id, backend: &attempt.backend,
+            input, verdict, duration_secs, still: attempt.still.clone(), derived_params,
+        });
+        let failure = match result {
+            Ok(()) => return Ok(Won { key: attempt.key.clone(), backend_id: attempt.backend_id.clone() }),
+            Err(f) => f,
+        };
+        let stopped_on_purpose = queue.preempted.lock().unwrap().contains(job_id)
+            || queue.cache.get_job(job_id).map(|j| j.state) == Some(JobState::Cancelled);
+        if stopped_on_purpose {
+            return Err(failure);
+        }
+        queue.cache.record_failure(&attempt.key, &failure.message);
+        first_failure.get_or_insert(failure);
+    }
+    Err(first_failure.unwrap_or_else(|| Failure::plain("no converter to run".to_string())))
+}
+
 /// What [`run_conversion`] needs — bundled so the call doesn't carry
 /// eight loose arguments (`queue`/`job_id` stay separate: they name
 /// *where* this runs, not *what* to run).
 struct ConversionJob<'a> {
+    /// The cache key the finished output is renamed into place under.
+    key: &'a str,
     backend_id: &'a str,
     backend: &'a std::path::Path,
     input: &'a std::path::Path,
@@ -719,8 +801,7 @@ fn run_conversion(queue: &Queue, job_id: &str, job: ConversionJob<'_>) -> Result
     file.sync_all().map_err(|e| Failure::plain(e.to_string()))?;
     drop(file);
 
-    let key = queue.cache.get_job(job_id).map(|j| j.key).unwrap_or_default();
-    let final_path = queue.cache.entry_path(&key, output_ext(job.verdict));
+    let final_path = queue.cache.entry_path(job.key, output_ext(job.verdict));
     if let Some(dir) = final_path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| Failure::plain(e.to_string()))?;
     }
@@ -754,8 +835,106 @@ mod tests {
         (Queue::new(cache, QueueConfig::default(), RuntimeSettings::default()), dir)
     }
 
+    fn still_attempt(key: &str, backend_id: &str, backend: &Path) -> Attempt {
+        Attempt {
+            key: key.to_string(), backend_id: backend_id.to_string(), backend: backend.to_path_buf(),
+            still: Some(StillRenderRequest {
+                selection: StillSelection::default(), width: Some(64), height: Some(32),
+            }),
+        }
+    }
+
+    fn run_still_attempts(queue: &Queue, job: &str, attempts: Vec<Attempt>) -> Result<Won, Failure> {
+        run_attempts(
+            queue, job, Path::new("in.exr"), Verdict::Render, None, &DerivedParams::default(), attempts)
+    }
+
+    #[test]
+    fn when_every_converter_fails_each_is_remembered_and_the_first_error_is_reported() {
+        let (queue, _dir) = temp_queue("attempts-all-fail");
+        let job = queue.cache.create_job("k-oiio", "requested", "oiiotool", "in.exr");
+        let result = run_still_attempts(&queue, &job, vec![
+            still_attempt("k-oiio", "oiiotool", Path::new("Z:/no/oiiotool.exe")),
+            still_attempt("k-magick", "magick", Path::new("Z:/no/magick.exe")),
+        ]);
+        let Err(failure) = result else { panic!("every converter is a missing binary") };
+        assert_eq!(queue.cache.failure("k-oiio").as_deref(), Some(failure.message.as_str()));
+        assert!(queue.cache.failure("k-magick").is_some(), "the fallback's failure is remembered too");
+        // The job row follows the converter that was running last.
+        assert_eq!(queue.cache.get_job(&job).unwrap().backend_id.as_deref(), Some("magick"));
+    }
+
+    #[test]
+    fn a_cancelled_job_neither_falls_through_nor_records_a_failure() {
+        let (queue, _dir) = temp_queue("attempts-cancelled");
+        let job = queue.cache.create_job("k1", "requested", "oiiotool", "in.exr");
+        queue.cache.set_job_cancelled(&job);
+        let result = run_still_attempts(&queue, &job, vec![
+            still_attempt("k1", "oiiotool", Path::new("Z:/no/oiiotool.exe")),
+            still_attempt("k2", "magick", Path::new("Z:/no/magick.exe")),
+        ]);
+        assert!(result.is_err());
+        assert!(queue.cache.failure("k1").is_none());
+        assert!(queue.cache.failure("k2").is_none());
+        assert_eq!(queue.cache.get_job(&job).unwrap().backend_id.as_deref(), Some("oiiotool"));
+    }
+
+    #[test]
+    fn a_preempted_job_neither_falls_through_nor_records_a_failure() {
+        let (queue, _dir) = temp_queue("attempts-preempted");
+        let job = queue.cache.create_job("k1", "requested", "oiiotool", "in.exr");
+        queue.preempted.lock().unwrap().insert(job.clone());
+        let result = run_still_attempts(&queue, &job, vec![
+            still_attempt("k1", "oiiotool", Path::new("Z:/no/oiiotool.exe")),
+            still_attempt("k2", "magick", Path::new("Z:/no/magick.exe")),
+        ]);
+        assert!(result.is_err());
+        assert!(queue.cache.failure("k1").is_none());
+    }
+
+    /// The failover itself, against a real ffmpeg: the preferred
+    /// converter can't run, the next one renders, and the entry is
+    /// stored under *its* key and attributed to it. Ignored by default.
+    #[test]
+    #[ignore = "depends on this machine's installed backends"]
+    fn a_failed_converter_falls_through_to_a_real_ffmpeg_render() {
+        let statuses = media_core::detect_all(&HashMap::new());
+        let Some(ffmpeg) = statuses.iter().find(|s| s.id == "ffmpeg" && s.ok)
+            .and_then(|s| s.path.clone()) else {
+            eprintln!("skipping: no real ffmpeg found on this machine");
+            return;
+        };
+        let (queue, dir) = temp_queue("attempts-real-failover");
+        let input = dir.0.join("in.exr");
+        let raw = dir.0.join("flat.raw");
+        let pixel = 0.18f32.to_le_bytes();
+        std::fs::write(&raw, (0..64 * 32 * 3).flat_map(|_| pixel).collect::<Vec<u8>>()).unwrap();
+        let made = std::process::Command::new(&ffmpeg)
+            .args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "gbrpf32le", "-s", "64x32", "-i"])
+            .arg(&raw)
+            .args(["-frames:v", "1", "-c:v", "exr", "-pix_fmt", "gbrpf32le"])
+            .arg(&input)
+            .status().unwrap();
+        assert!(made.success());
+
+        let job = queue.cache.create_job("k-oiio", "requested", "oiiotool", &input.display().to_string());
+        let won = run_attempts(
+            &queue, &job, &input, Verdict::Render, None, &DerivedParams::default(),
+            vec![
+                still_attempt("k-oiio", "oiiotool", Path::new("Z:/no/oiiotool.exe")),
+                still_attempt("k-ffmpeg", "ffmpeg", Path::new(&ffmpeg)),
+            ],
+        ).ok().expect("the ffmpeg fallback should have rendered it");
+
+        assert_eq!((won.key.as_str(), won.backend_id.as_str()), ("k-ffmpeg", "ffmpeg"));
+        assert!(queue.cache.entry_path("k-ffmpeg", "jpg").exists());
+        assert!(queue.cache.failure("k-oiio").is_some());
+        assert!(queue.cache.failure("k-ffmpeg").is_none());
+    }
+
     fn fake_request(key: &'static str) -> EnqueueRequest<'static> {
         EnqueueRequest {
+            fallbacks: Vec::new(),
             key, priority: "requested",
             input: Path::new("Z:/does/not/exist.mp4"),
             verdict: Verdict::Remux,

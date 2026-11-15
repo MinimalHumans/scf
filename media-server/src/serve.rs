@@ -20,7 +20,7 @@
 use std::convert::Infallible;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use http_body_util::Full;
 use hyper::body::{Bytes, Incoming};
@@ -59,15 +59,101 @@ struct MediaRequest<'a> {
 /// backend (Phase 5) might be able to flatten — checked *before*
 /// ffprobe is even tried, since these aren't ffprobe's turf at all
 /// (unlike video/audio, where probing might incidentally fail for
-/// other reasons). Each maps to the one backend id that can read it
-/// (spec §3's backend-role table): oiiotool for EXR/DPX (layer/
-/// channel introspection, OCIO), magick for the rest (flatten only).
-fn still_backend_for(ext: &str) -> Option<&'static str> {
+/// other reasons). Each maps to the converters that can read it, in
+/// preference order: oiiotool first for EXR/DPX (layer/channel
+/// introspection, OCIO), then magick and ffmpeg, which can flatten the
+/// first layer and so keep a preview working when oiiotool isn't
+/// installed (or can't read the particular file). TIFF/PSD/HEIC are
+/// magick only. An empty list means "not a still format."
+fn still_backends_for(ext: &str) -> &'static [&'static str] {
     match ext {
-        "exr" | "dpx" => Some("oiiotool"),
-        "tif" | "tiff" | "psd" | "heic" | "heif" => Some("magick"),
-        _ => None,
+        "exr" | "dpx" => &["oiiotool", "magick", "ffmpeg"],
+        "tif" | "tiff" | "psd" | "heic" | "heif" => &["magick"],
+        _ => &[],
     }
+}
+
+/// A converter that is configured and whose probe could read the file.
+struct StillCandidate {
+    backend_id: &'static str,
+    /// What gets spawned to render: the ffmpeg binary for `"ffmpeg"`
+    /// (its probe uses ffprobe, which is not stored here).
+    backend_path: PathBuf,
+    probe: media_core::StillProbeResult,
+    key: String,
+    selection: media_core::StillSelection,
+}
+
+/// Why no converter is usable for a still, in `serve_still_media`'s and
+/// `serve_still_meta`'s own terms.
+enum StillResolveError {
+    /// No converter for this format is configured at all.
+    NoneConfigured,
+    /// Some are configured but none could read the file; carries the
+    /// first one's id and its probe error.
+    Unreadable(&'static str, String),
+}
+
+/// Every converter for `ext`, in preference order, that is configured
+/// and can probe `path` — each with the cache key it would render
+/// under. `serve_still_media` and `serve_still_meta` both go through
+/// here and then [`pick_still_candidate`], so they can't disagree about
+/// which converter a file uses.
+///
+/// `layer`/`channel` are an oiiotool-only concept (magick and ffmpeg
+/// flatten to the first layer), so they're only part of oiiotool's key:
+/// a layer param on a request that lands on another converter is
+/// ignored rather than splitting its cache entries.
+fn still_candidates(
+    ctx: &Context, path: &Path, ext: &str, sig: media_core::SourceSignature,
+    layer: Option<&str>, channel: Option<&str>,
+) -> Result<Vec<StillCandidate>, StillResolveError> {
+    let mut candidates = Vec::new();
+    let mut first_error: Option<(&'static str, String)> = None;
+    for &backend_id in still_backends_for(ext) {
+        let Some(backend_path) = ctx.backends.get(backend_id) else { continue };
+        let probe_result = match backend_id {
+            "oiiotool" => ctx.still_probe_cache.probe_oiiotool(&backend_path, path),
+            // ffmpeg renders; ffprobe is what reads dimensions. No
+            // ffprobe means ffmpeg isn't usable for stills.
+            "ffmpeg" => match ctx.backends.get("ffprobe") {
+                Some(ffprobe) => ctx.still_probe_cache.probe_ffmpeg(&ffprobe, path),
+                None => continue,
+            },
+            _ => ctx.still_probe_cache.probe_magick(&backend_path, path),
+        };
+        let probe = match probe_result {
+            Ok(probe) => probe,
+            Err(e) => {
+                first_error.get_or_insert((backend_id, e));
+                continue;
+            }
+        };
+        let (layer, channel) = if backend_id == "oiiotool" { (layer, channel) } else { (None, None) };
+        let params = media_core::DerivedParams {
+            layer: layer.map(str::to_string), channel: channel.map(str::to_string),
+            resolution_cap: 0, crf: 0, hardware_encoder: None,
+        };
+        let version = ctx.backends.version(backend_id);
+        let key = media_core::cache_key(sig, backend_id, &version, media_core::PROFILE_VERSION, &params);
+        let selection = media_core::resolve_still_selection(&probe, layer, channel);
+        candidates.push(StillCandidate { backend_id, backend_path, probe, key, selection });
+    }
+    if !candidates.is_empty() {
+        return Ok(candidates);
+    }
+    Err(match first_error {
+        Some((id, e)) => StillResolveError::Unreadable(id, e),
+        None => StillResolveError::NoneConfigured,
+    })
+}
+
+/// The index of the converter a request should use: the first one that
+/// hasn't already failed on this exact file (a recorded negative-cache
+/// entry under its key — which embeds the file's signature, so an edited
+/// file starts clean). `None` when every candidate has failed.
+fn pick_still_candidate(ctx: &Context, candidates: &[StillCandidate]) -> Option<usize> {
+    candidates.iter().position(|c| ctx.queue.cache().failure(&c.key).is_none())
 }
 
 type Res = Response<Full<Bytes>>;
@@ -330,8 +416,9 @@ fn serve_media(
     request: MediaRequest<'_>, project_ids: &[String],
 ) -> Res {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        if let Some(backend_id) = still_backend_for(&ext.to_lowercase()) {
-            return serve_still_media(ctx, path, range_header, backend_id, request, project_ids);
+        let ext = ext.to_lowercase();
+        if !still_backends_for(&ext).is_empty() {
+            return serve_still_media(ctx, path, range_header, &ext, request, project_ids);
         }
     }
 
@@ -377,6 +464,7 @@ fn serve_media(
                 json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({ "error": error }))
             } else {
                 let job_id = ctx.queue.enqueue(crate::queue::EnqueueRequest {
+                    fallbacks: Vec::new(),
                     key: &key, priority: request.priority, input: path, verdict,
                     backend_id: "ffmpeg", backend: &ffmpeg,
                     duration_secs: probe.duration_secs, still: None,
@@ -410,12 +498,12 @@ fn serve_media(
             }
             response
         }
-        Verdict::Render => unreachable!("still formats never reach classify() — see still_backend_for"),
+        Verdict::Render => unreachable!("still formats never reach classify() — see still_backends_for"),
     }
 }
 
 /// Phase 5's still-image counterpart to the video branch above: probe
-/// via whichever backend `still_backend_for` named, classify (always
+/// via the converters `still_backends_for` lists, preferred first, classify (always
 /// `Render` when a backend exists, `Unsupported` otherwise — spec §5's
 /// explicit "no backend -> fall back to raw passthrough or 415"
 /// fallback is `Unsupported`'s case here), then the same cache-hit/
@@ -425,34 +513,12 @@ fn serve_media(
 /// a stray query param on a PSD request is silently ignored, not an
 /// error.
 fn serve_still_media(
-    ctx: &Context, path: &Path, range_header: Option<&str>, backend_id: &str,
+    ctx: &Context, path: &Path, range_header: Option<&str>, ext: &str,
     request: MediaRequest<'_>, project_ids: &[String],
 ) -> Res {
-    let (layer, channel) = (request.layer, request.channel);
-    let Some(backend_path) = ctx.backends.get(backend_id) else {
-        return serve_file(path, range_header); // spec §5: no backend -> raw passthrough
-    };
-    let probe_result = if backend_id == "oiiotool" {
-        ctx.still_probe_cache.probe_oiiotool(&backend_path, path)
-    } else {
-        ctx.still_probe_cache.probe_magick(&backend_path, path)
-    };
-    let Ok(probe) = probe_result else {
-        return json(StatusCode::UNSUPPORTED_MEDIA_TYPE, &serde_json::json!({
-            "error": format!("{backend_id} could not read this file"),
-        }));
-    };
-    let verdict = media_core::classify_still(&probe, true);
-    if verdict == Verdict::Unsupported {
-        return json(StatusCode::UNSUPPORTED_MEDIA_TYPE, &serde_json::json!({
-            "error": "the browser can't decode this, and nothing here can convert it either",
-        }));
-    }
-
     let Ok(sig) = media_core::source_signature(path) else {
         return serve_file(path, range_header); // can't sign it; raw is still a valid answer
     };
-    let version = ctx.backends.version(backend_id);
     // The *raw* request strings, not the resolved selection — two
     // requests that happen to resolve to the same effective layer
     // (e.g. no `layer` given vs. explicitly naming the default one)
@@ -462,30 +528,71 @@ fn serve_still_media(
     // layer's *name* back out (today it only carries the channels
     // already filtered by it), which is more plumbing than this
     // phase's scope calls for.
-    let params = media_core::DerivedParams {
-        layer: layer.map(str::to_string), channel: channel.map(str::to_string),
-        resolution_cap: 0, crf: 0, hardware_encoder: None,
+    let candidates = match still_candidates(ctx, path, ext, sig, request.layer, request.channel) {
+        Ok(candidates) => candidates,
+        Err(StillResolveError::NoneConfigured) => {
+            return serve_file(path, range_header); // spec §5: no backend -> raw passthrough
+        }
+        Err(StillResolveError::Unreadable(backend_id, _)) => {
+            return json(StatusCode::UNSUPPORTED_MEDIA_TYPE, &serde_json::json!({
+                "error": format!("{backend_id} could not read this file"),
+            }));
+        }
     };
-    let key = media_core::cache_key(sig, backend_id, &version, media_core::PROFILE_VERSION, &params);
-    let selection = media_core::resolve_still_selection(&probe, layer, channel);
 
+    // Every converter that could render this file records a ref, hit
+    // or miss — a project's usage reflects all of them.
     for pid in project_ids {
-        ctx.queue.cache().add_ref(pid, &key);
+        for c in &candidates {
+            ctx.queue.cache().add_ref(pid, &c.key);
+        }
     }
 
-    let response = if let Some(entry) = ctx.queue.cache().get_entry(&key) {
-        ctx.queue.cache().touch_entry(&key);
-        serve_file(Path::new(&entry.path_on_disk), range_header)
-    } else if let Some(error) = ctx.queue.cache().failure(&key) {
-        json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({ "error": error }))
-    } else {
-        let job_id = ctx.queue.enqueue(crate::queue::EnqueueRequest {
-            key: &key, priority: request.priority, input: path, verdict,
-            backend_id, backend: &backend_path, duration_secs: None,
-            still: Some(StillRenderRequest { selection, width: probe.width, height: probe.height }),
-            derived_params: params,
-        });
-        json(StatusCode::ACCEPTED, &serde_json::json!({ "jobId": job_id, "state": "queued" }))
+    let response = match pick_still_candidate(ctx, &candidates) {
+        None => {
+            // Every converter has already failed on this exact file.
+            let error = ctx.queue.cache().failure(&candidates[0].key).unwrap_or_default();
+            json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({ "error": error }))
+        }
+        Some(picked) => {
+            let chosen = &candidates[picked];
+            if let Some(entry) = ctx.queue.cache().get_entry(&chosen.key) {
+                ctx.queue.cache().touch_entry(&chosen.key);
+                serve_file(Path::new(&entry.path_on_disk), range_header)
+            } else {
+                // Everything after the chosen converter that hasn't
+                // already failed on this file is its fallback: the job
+                // tries them in order if the chosen one fails, so one
+                // request is enough to end up with a preview.
+                let fallbacks = candidates[picked + 1..].iter()
+                    .filter(|c| ctx.queue.cache().failure(&c.key).is_none())
+                    .map(|c| crate::queue::StillFallback {
+                        key: c.key.clone(), backend_id: c.backend_id.to_string(),
+                        backend: c.backend_path.clone(),
+                        still: StillRenderRequest {
+                            selection: c.selection.clone(), width: c.probe.width, height: c.probe.height,
+                        },
+                    })
+                    .collect();
+                let params = media_core::DerivedParams {
+                    layer: request.layer.filter(|_| chosen.backend_id == "oiiotool").map(str::to_string),
+                    channel: request.channel.filter(|_| chosen.backend_id == "oiiotool").map(str::to_string),
+                    resolution_cap: 0, crf: 0, hardware_encoder: None,
+                };
+                let job_id = ctx.queue.enqueue(crate::queue::EnqueueRequest {
+                    key: &chosen.key, priority: request.priority, input: path,
+                    verdict: media_core::classify_still(&chosen.probe, true),
+                    backend_id: chosen.backend_id, backend: &chosen.backend_path, duration_secs: None,
+                    still: Some(StillRenderRequest {
+                        selection: chosen.selection.clone(),
+                        width: chosen.probe.width, height: chosen.probe.height,
+                    }),
+                    derived_params: params,
+                    fallbacks,
+                });
+                json(StatusCode::ACCEPTED, &serde_json::json!({ "jobId": job_id, "state": "queued" }))
+            }
+        }
     };
 
     for pid in project_ids {
@@ -497,32 +604,43 @@ fn serve_still_media(
 /// `/meta` for a still format: the same `probe`/`verdict` shape video
 /// gets (via `StillProbeResult`'s `ProbeResult` conversion, so the
 /// frontend's `AssetMeta` type needs no still-specific probe shape),
-/// plus `layers`/`channels` — empty whenever the backend is magick or
-/// has no layer structure to report, which the frontend reads as
-/// "nothing to pick," not an error (spec §4: "Frontend builds the
-/// layer picker from this").
-fn serve_still_meta(ctx: &Context, path: &Path, backend_id: &str) -> Res {
-    let Some(backend_path) = ctx.backends.get(backend_id) else {
-        return json(StatusCode::SERVICE_UNAVAILABLE, &serde_json::json!({
-            "error": format!("{backend_id} is not configured — see Settings \u{2192} Backends"),
+/// plus `layers`/`channels` — empty whenever the converter is magick or
+/// ffmpeg, or has no layer structure to report, which the frontend
+/// reads as "nothing to pick," not an error (spec §4: "Frontend builds
+/// the layer picker from this").
+///
+/// Describes the same converter `/media` will use for this file: both
+/// resolve through `still_candidates` + `pick_still_candidate`. (Asked
+/// with no layer, so a failure recorded against one specific layer of
+/// an oiiotool request isn't visible here.)
+fn serve_still_meta(ctx: &Context, path: &Path, ext: &str) -> Res {
+    let Ok(sig) = media_core::source_signature(path) else {
+        return json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({
+            "error": "could not read the file's size/time",
         }));
     };
-    let probe_result = if backend_id == "oiiotool" {
-        ctx.still_probe_cache.probe_oiiotool(&backend_path, path)
-    } else {
-        ctx.still_probe_cache.probe_magick(&backend_path, path)
-    };
-    match probe_result {
-        Ok(result) => {
-            let verdict = media_core::classify_still(&result, true);
-            let probe: media_core::ProbeResult = (&result).into();
-            json(StatusCode::OK, &serde_json::json!({
-                "probe": probe, "verdict": verdict,
-                "layers": result.layers, "channels": result.channels,
-            }))
+    let candidates = match still_candidates(ctx, path, ext, sig, None, None) {
+        Ok(candidates) => candidates,
+        Err(StillResolveError::NoneConfigured) => {
+            return json(StatusCode::SERVICE_UNAVAILABLE, &serde_json::json!({
+                "error": format!(
+                    "no converter for this format is configured ({}) — see Settings \u{2192} Backends",
+                    still_backends_for(ext).join(", ")),
+            }));
         }
-        Err(e) => json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({ "error": e })),
-    }
+        Err(StillResolveError::Unreadable(_, e)) => {
+            return json(StatusCode::UNPROCESSABLE_ENTITY, &serde_json::json!({ "error": e }));
+        }
+    };
+    // All of them failed on this file: still describe it, via the
+    // preferred converter, rather than turning `/meta` into an error.
+    let chosen = &candidates[pick_still_candidate(ctx, &candidates).unwrap_or(0)];
+    let verdict = media_core::classify_still(&chosen.probe, true);
+    let probe: media_core::ProbeResult = (&chosen.probe).into();
+    json(StatusCode::OK, &serde_json::json!({
+        "probe": probe, "verdict": verdict,
+        "layers": chosen.probe.layers, "channels": chosen.probe.channels,
+    }))
 }
 
 fn json(status: StatusCode, body: &serde_json::Value) -> Res {
@@ -540,8 +658,9 @@ fn json(status: StatusCode, body: &serde_json::Value) -> Res {
 /// turf to begin with.
 fn serve_meta(ctx: &Context, path: &Path) -> Res {
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        if let Some(backend_id) = still_backend_for(&ext.to_lowercase()) {
-            return serve_still_meta(ctx, path, backend_id);
+        let ext = ext.to_lowercase();
+        if !still_backends_for(&ext).is_empty() {
+            return serve_still_meta(ctx, path, &ext);
         }
     }
 
@@ -993,6 +1112,159 @@ mod tests {
             MediaRequest { layer: None, channel: None, priority: "requested" }, &[],
         );
         assert_eq!(res.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    #[test]
+    fn exr_and_dpx_prefer_oiiotool_then_magick_then_ffmpeg_and_the_rest_are_magick_only() {
+        for ext in ["exr", "dpx"] {
+            assert_eq!(still_backends_for(ext), ["oiiotool", "magick", "ffmpeg"], "{ext}");
+        }
+        for ext in ["tif", "tiff", "psd", "heic", "heif"] {
+            assert_eq!(still_backends_for(ext), ["magick"], "{ext}");
+        }
+        for ext in ["png", "mp4", "txt", ""] {
+            assert!(still_backends_for(ext).is_empty(), "{ext}");
+        }
+    }
+
+    fn candidate(backend_id: &'static str, key: &str) -> StillCandidate {
+        StillCandidate {
+            backend_id, backend_path: PathBuf::from("x"), probe: Default::default(),
+            key: key.to_string(), selection: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_picked_converter_is_the_first_one_that_has_not_failed_on_this_file() {
+        let ctx = test_ctx(media_core::Backends::default());
+        let candidates = vec![candidate("oiiotool", "k1"), candidate("magick", "k2"), candidate("ffmpeg", "k3")];
+        assert_eq!(pick_still_candidate(&ctx, &candidates), Some(0));
+
+        ctx.queue.cache().record_failure("k1", "oiiotool could not read this");
+        assert_eq!(pick_still_candidate(&ctx, &candidates), Some(1));
+
+        ctx.queue.cache().record_failure("k2", "magick could not read this");
+        assert_eq!(pick_still_candidate(&ctx, &candidates), Some(2));
+
+        ctx.queue.cache().record_failure("k3", "ffmpeg could not read this");
+        assert_eq!(pick_still_candidate(&ctx, &candidates), None);
+    }
+
+    /// ffmpeg's stills need ffprobe for dimensions; ffmpeg alone is not
+    /// a usable converter, so this behaves like "nothing configured."
+    #[tokio::test]
+    async fn ffmpeg_without_ffprobe_is_not_a_usable_still_converter() {
+        let backends = media_core::Backends::default();
+        backends.set("ffmpeg", Some(PathBuf::from("Z:/definitely/not/ffmpeg.exe")));
+        let ctx = test_ctx(backends);
+        let data = b"not really an exr";
+        let file = TempFile::with_bytes("ffmpeg-only.exr", data);
+        let res = serve_media(
+            &ctx, &file.path, None,
+            MediaRequest { layer: None, channel: None, priority: "requested" }, &[],
+        );
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_bytes(res).await, data);
+    }
+
+    /// Configured converters that all fail to read the file: 415 naming
+    /// the preferred one — a bad file isn't mistaken for "nothing
+    /// installed" (that's the passthrough case above).
+    #[tokio::test]
+    async fn an_exr_every_configured_converter_fails_to_probe_is_415_naming_the_first() {
+        let backends = media_core::Backends::default();
+        for id in ["oiiotool", "magick", "ffmpeg", "ffprobe"] {
+            backends.set(id, Some(PathBuf::from(format!("Z:/definitely/not/{id}.exe"))));
+        }
+        let ctx = test_ctx(backends);
+        let file = TempFile::with_bytes("unreadable.exr", b"whatever");
+        let res = serve_media(
+            &ctx, &file.path, None,
+            MediaRequest { layer: None, channel: None, priority: "requested" }, &[],
+        );
+        assert_eq!(res.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        let body = String::from_utf8(body_bytes(res).await).unwrap();
+        assert!(body.contains("oiiotool"), "body was: {body}");
+    }
+
+    #[tokio::test]
+    async fn meta_for_a_still_with_no_converter_configured_is_503_listing_them() {
+        let ctx = test_ctx(media_core::Backends::default());
+        let file = TempFile::with_bytes("meta-none.exr", b"whatever");
+        let res = serve_meta(&ctx, &file.path);
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = String::from_utf8(body_bytes(res).await).unwrap();
+        assert!(body.contains("oiiotool") && body.contains("ffmpeg"), "body was: {body}");
+    }
+
+    /// The whole fallback path on a machine with only ffmpeg: oiiotool
+    /// is configured but can't run, magick isn't installed, ffmpeg is.
+    /// `/meta` and `/media` must agree on ffmpeg, and the cached entry
+    /// must say it came from there. Ignored by default.
+    #[tokio::test]
+    #[ignore = "depends on this machine's installed backends"]
+    async fn an_exr_is_previewed_by_ffmpeg_when_the_preferred_converters_are_unavailable() {
+        let statuses = media_core::detect_all(&std::collections::HashMap::new());
+        let path_of = |id: &str| statuses.iter().find(|s| s.id == id && s.ok).and_then(|s| s.path.clone());
+        let (Some(ffmpeg), Some(ffprobe)) = (path_of("ffmpeg"), path_of("ffprobe")) else {
+            eprintln!("skipping: no real ffmpeg/ffprobe found on this machine");
+            return;
+        };
+
+        let dir = std::env::temp_dir().join(format!("media-server-test-exr-fallback-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.exr");
+        let raw = dir.join("flat.raw");
+        let pixel = 0.18f32.to_le_bytes();
+        std::fs::write(&raw, (0..64 * 32 * 3).flat_map(|_| pixel).collect::<Vec<u8>>()).unwrap();
+        assert!(std::process::Command::new(&ffmpeg)
+            .args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "gbrpf32le", "-s", "64x32", "-i"])
+            .arg(&raw)
+            .args(["-frames:v", "1", "-c:v", "exr", "-pix_fmt", "gbrpf32le"])
+            .arg(&input)
+            .status().unwrap().success());
+
+        let backends = media_core::Backends::default();
+        backends.set("oiiotool", Some(PathBuf::from("Z:/definitely/not/oiiotool.exe")));
+        backends.set("ffmpeg", Some(PathBuf::from(&ffmpeg)));
+        backends.set("ffprobe", Some(PathBuf::from(&ffprobe)));
+        let ctx = test_ctx(backends);
+
+        let meta = serve_meta(&ctx, &input);
+        assert_eq!(meta.status(), StatusCode::OK);
+        let meta: serde_json::Value = serde_json::from_slice(&body_bytes(meta).await).unwrap();
+        assert_eq!(meta["probe"]["width"], 64);
+        assert_eq!(meta["probe"]["height"], 32);
+        assert_eq!(meta["layers"], serde_json::json!([]));
+
+        let request = || MediaRequest { layer: None, channel: None, priority: "requested" };
+        let first = serve_media(&ctx, &input, None, request(), &[]);
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes(first).await).unwrap();
+        let job_id = body["jobId"].as_str().unwrap().to_string();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let job = ctx.queue.cache().get_job(&job_id).unwrap();
+            match job.state {
+                media_core::JobState::Done => break,
+                media_core::JobState::Failed | media_core::JobState::Cancelled => {
+                    panic!("job ended as {:?}: {:?}", job.state, job.error);
+                }
+                _ => {
+                    assert!(std::time::Instant::now() < deadline, "job did not finish in time");
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+
+        let second = serve_media(&ctx, &input, None, request(), &[]);
+        assert_eq!(second.status(), StatusCode::OK);
+        assert!(!body_bytes(second).await.is_empty());
+        let stats = ctx.queue.cache().stats();
+        assert_eq!(stats.stills.by_backend.get("ffmpeg"), Some(&1));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
