@@ -45,6 +45,7 @@ import { HostClientError } from "@minimalhumans/scf-host/client";
 import {
   registry, type OpenProject, type ProjectCache,
 } from "./projectCache.ts";
+import { SESSION_ID, forSession } from "./session.ts";
 import { err, ok } from "./toolResult.ts";
 
 // ── the shape of a plan ────────────────────────────────────────────
@@ -568,15 +569,16 @@ function register<A extends object>(
 ): void {
   const { server, cache } = on;
   server.registerTool(name, {
-    description:
+    description: forSession(
       `${description}\n\nThis tool CHANGES the film, so it works in two ` +
       "steps. Called as it stands it only PLANS: it changes nothing and " +
       "returns the exact changes, the risks and a `planId`. Show the " +
       "plan to the person you are working with and wait for their " +
       "approval. Then call the tool again with the same arguments plus " +
       "`confirm` set to that `planId`: it re-checks the film, and " +
-      "applies the change only if the plan is unchanged.",
+      "applies the change only if the plan is unchanged."),
     inputSchema: {
+      session_id: SESSION_ID,
       ...shape,
       confirm: z.string().optional().describe(
         "The `planId` of a plan the person has approved. Omit to plan."),
@@ -586,9 +588,9 @@ function register<A extends object>(
     },
   }, async (input) => {
     try {
-      const { confirm, verbose = false, ...args } =
-        input as { confirm?: string; verbose?: boolean } & A;
-      return ok(await cache.withProject(async (p) => {
+      const { session_id, confirm, verbose = false, ...args } = input as
+        { session_id: string; confirm?: string; verbose?: boolean } & A;
+      return ok(await cache.withProject(session_id, async (p) => {
         if (p.readOnly) throw new Error("this film was opened read-only");
         await requireCurrentSchema(p);
         const full = await makePlan(
@@ -1108,17 +1110,19 @@ export function registerWriteTools(on: WriteToolsOn): void {
 export function registerJournalTool(
     server: McpServer, cache: ProjectCache): void {
   server.registerTool("recent_changes", {
-    description: "The most recent writes to the open film, newest last, " +
+    description: forSession(
+      "The most recent writes to a film, newest last, " +
       "with which client made each — the editor window, or an MCP client " +
       "such as this one. Use it to see what changed since you last " +
-      "looked, or to attribute a change you did not make.",
+      "looked, or to attribute a change you did not make."),
     inputSchema: {
+      session_id: SESSION_ID,
       limit: z.number().int().min(1).max(200).optional().describe(
         "How many entries (default 50)."),
     },
-  }, async ({ limit }) => {
+  }, async ({ session_id, limit }) => {
     try {
-      return ok(await cache.withProject(async (p) => ({
+      return ok(await cache.withProject(session_id, async (p) => ({
         film: p.scfPath, revision: p.revision,
         changes: await p.host.journal(limit),
       })));

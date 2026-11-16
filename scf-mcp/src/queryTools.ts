@@ -45,6 +45,7 @@ import { z, type ZodRawShape } from "zod";
 import { buildDispatch, type QueryParams } from "./dispatch.ts";
 import { queryMarkdown, type QueryId } from "@minimalhumans/scf-core";
 import { registry, type ProjectCache } from "./projectCache.ts";
+import { SESSION_ID, forSession } from "./session.ts";
 import { err, ok, text } from "./toolResult.ts";
 
 /**
@@ -164,14 +165,15 @@ export function registerQueryTools(
   for (const spec of CATALOG) {
     const note = spec.note === undefined ? "" : ` ${spec.note}`;
     server.registerTool(toolNameFor(spec.title), {
-      description: `${spec.title} (${spec.id}, spec ${spec.section}). ` +
-        `${spec.summary}${note}`,
-      inputSchema: { ...spec.shape, format: FORMAT },
+      description: forSession(
+        `${spec.title} (${spec.id}, spec ${spec.section}). ` +
+        `${spec.summary}${note}`),
+      inputSchema: { session_id: SESSION_ID, ...spec.shape, format: FORMAT },
     }, async (args) => {
       try {
-        const { format, ...params } = args as QueryParams & {
-          format?: "json" | "markdown" };
-        const result = await cache.withProject(async (p) => {
+        const { session_id, format, ...params } = args as QueryParams & {
+          session_id: string; format?: "json" | "markdown" };
+        const result = await cache.withProject(session_id, async (p) => {
           const run = buildDispatch(p.locate, p.rootMapped)[spec.id];
           if (run === undefined) {
             throw new Error(`internal: no dispatch entry for "${spec.id}"`);

@@ -28,6 +28,8 @@ export const FIXTURE = join(HERE, "..", "..", "fixtures", "hollow_creek.scf");
 
 export interface Server {
   send: (method: string, params?: unknown) => Promise<unknown>;
+  /** What the server told the client about itself at the handshake. */
+  instructions: string;
   kill: () => void;
   /** The process the server runs in, to ask the OS what it holds open. */
   pid: number | undefined;
@@ -108,15 +110,16 @@ export async function startServer(
     });
   };
 
-  await send("initialize", {
+  const hello = await send("initialize", {
     protocolVersion: "2025-06-18",
     capabilities: elicit === undefined ? {} : { elicitation: {} },
     clientInfo: { name: "smoke", version: "0.0.1" },
-  });
+  }) as { instructions?: string };
   await client.send(
     { jsonrpc: "2.0", method: "notifications/initialized" });
   return {
     send,
+    instructions: hello.instructions ?? "",
     // Closes app.db's own connection too: on Windows, a caller that
     // then removes `configDir` (most do, in a `finally`) gets EPERM if
     // this is left open — unlike Linux/macOS, Windows refuses to
@@ -142,4 +145,31 @@ export async function callTool(
   let json: unknown = null;
   try { json = JSON.parse(text); } catch { /* plain text */ }
   return { isError: r.isError === true, text, json };
+}
+
+/** Open a film, as an agent does first, and return its session id. */
+export async function openFilm(
+    server: Server, scfPath: string): Promise<string> {
+  const r = await callTool(server, "open", { scfPath });
+  if (r.isError) throw new Error(`open ${scfPath}: ${r.text}`);
+  return (r.json as { session_id: string }).session_id;
+}
+
+/**
+ * `server` as one conversation that has a film open sees it: every tool
+ * call that works on a film carries `sessionId`, as an agent's would.
+ */
+export function inSession(server: Server, sessionId: string): Server {
+  return {
+    ...server,
+    send: (method, params) => {
+      const call = params as
+        { name?: string; arguments?: Record<string, unknown> } | undefined;
+      const named = method !== "tools/call" || call === undefined ||
+        call.name === "open" || call.name === "recent_files";
+      return server.send(method, named ? params : {
+        ...call, arguments: { session_id: sessionId, ...call.arguments },
+      });
+    },
+  };
 }

@@ -120,6 +120,7 @@ export async function serveMcp(): Promise<void> {
       HostClient.connect(await windowHostTransport(), { name }),
     resolve: (path) => paths.resolve(cwd, path),
     locator, appStore,
+    machineId: () => invoke<string>("machine_id"),
     readText: files.readText,
     log: (message) => { console.warn(`[mcp] ${message}`); },
   });

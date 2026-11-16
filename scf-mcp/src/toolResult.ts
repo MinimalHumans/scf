@@ -10,6 +10,7 @@
  * and is delivered whole when it is not.
  */
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { InvalidSessionError } from "./session.ts";
 
 export function ok(value: unknown): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value) }] };
@@ -19,7 +20,9 @@ export function text(value: string): CallToolResult {
   return { content: [{ type: "text", text: value }] };
 }
 
+/** An error as its message; `invalid_session` as its whole payload. */
 export function err(e: unknown): CallToolResult {
-  const message = e instanceof Error ? e.message : String(e);
+  const message = e instanceof InvalidSessionError ? JSON.stringify(e.payload)
+    : e instanceof Error ? e.message : String(e);
   return { content: [{ type: "text", text: message }], isError: true };
 }

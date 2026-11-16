@@ -7,6 +7,7 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { resolve } from "node:path";
 import type { AppStore } from "@minimalhumans/scf-host";
 import { makeNodeLocator } from "./nodeLocator.ts";
@@ -23,6 +24,7 @@ export function makeNodePlatform(options: NodePlatformOptions): McpPlatform {
     resolve: (path) => resolve(path),
     locator: makeNodeLocator,
     appStore: options.appStore,
+    machineId: () => Promise.resolve(hostname()),
     readText: (path) => readFile(path, "utf8"),
     log: (message) => { process.stderr.write(`${message}\n`); },
   };

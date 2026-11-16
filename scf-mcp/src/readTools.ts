@@ -21,6 +21,7 @@ import {
   type GalleryFilter, type GallerySort, type Row, type SceneSheet,
 } from "@minimalhumans/scf-core";
 import type { ProjectCache } from "./projectCache.ts";
+import { SESSION_ID, forSession } from "./session.ts";
 import { err, ok } from "./toolResult.ts";
 
 const text = (v: unknown): string | null =>
@@ -57,19 +58,21 @@ function sheetJson(sheet: SceneSheet, locations: Map<number, Row>,
 export function registerReadTools(
     server: McpServer, cache: ProjectCache): void {
   server.registerTool("shot_list", {
-    description: "The shot list: every shot in story order, grouped by " +
+    description: forSession(
+      "The shot list: every shot in story order, grouped by " +
       "scene and under its beat, with size, angle, movement, lens, " +
       "duration and action — what the editor prints as a shot list. " +
       "Cut shots are left out unless asked for. Pass `sceneUuid` for " +
-      "one scene.",
+      "one scene."),
     inputSchema: {
+      session_id: SESSION_ID,
       sceneUuid: z.string().optional().describe("Only this scene."),
       includeCut: z.boolean().optional().describe(
         "Also list shots that have been cut from the film."),
     },
-  }, async ({ sceneUuid, includeCut }) => {
+  }, async ({ session_id, sceneUuid, includeCut }) => {
     try {
-      return ok(await cache.withProject(async ({ ctx }) => {
+      return ok(await cache.withProject(session_id, async ({ ctx }) => {
         const rows = await readShotlistRows(ctx.exec);
         let scope = "all";
         if (sceneUuid !== undefined) {
@@ -102,12 +105,14 @@ export function registerReadTools(
   });
 
   server.registerTool("gallery", {
-    description: "Every asset in the film ranked by how much it is " +
+    description: forSession(
+      "Every asset in the film ranked by how much it is " +
       "carrying — direct uses plus, for each subject it reaches, one and " +
       "the number of scenes that subject is in. Answers \"which " +
       "references matter most\" and \"what is not used by anything\". " +
-      "Lists files, never their bytes.",
+      "Lists files, never their bytes."),
     inputSchema: {
+      session_id: SESSION_ID,
       sort: z.enum(["importance", "alphabetical", "newest"]).optional()
         .describe("Default importance."),
       filter: z.enum(["all", "character", "location", "prop", "shot",
@@ -117,9 +122,9 @@ export function registerReadTools(
       limit: z.number().int().min(1).max(500).optional().describe(
         "How many (default 50)."),
     },
-  }, async ({ sort, filter, includeHistory, limit }) => {
+  }, async ({ session_id, sort, filter, includeHistory, limit }) => {
     try {
-      return ok(await cache.withProject(async ({ ctx }) => {
+      return ok(await cache.withProject(session_id, async ({ ctx }) => {
         const all = await loadGallery(ctx.exec, includeHistory === true);
         const kept = sortItems(
           filterItems(all, (filter ?? "all") as GalleryFilter, false),
@@ -140,18 +145,20 @@ export function registerReadTools(
   });
 
   server.registerTool("character_presence", {
-    description: "Where a character is, two ways: the scenes they are " +
+    description: forSession(
+      "Where a character is, two ways: the scenes they are " +
       "linked to, and the scenes where the script gives them a cue. " +
       "Where the two disagree it says how — `silent` (linked and the " +
       "scene is written, but they never speak: often right, a question " +
       "rather than an error) or `unlinked` (speaks in a scene they are " +
-      "not linked to). Scenes in story order.",
+      "not linked to). Scenes in story order."),
     inputSchema: {
+      session_id: SESSION_ID,
       characterUuid: z.string().describe("The character's uuid."),
     },
-  }, async ({ characterUuid }) => {
+  }, async ({ session_id, characterUuid }) => {
     try {
-      return ok(await cache.withProject(async ({ ctx }) => {
+      return ok(await cache.withProject(session_id, async ({ ctx }) => {
         const who = (await rowsIncludingCut(
           ctx.exec, "character", "uuid = ?", [characterUuid]))[0];
         if (who === undefined) {
