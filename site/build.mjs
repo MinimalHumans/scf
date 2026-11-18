@@ -56,6 +56,35 @@ const PAGES = [
   { group: "", title: "Overview", slug: "index", source: "site/index.md",
     blurb: "What the format is" },
 
+  { group: "The editor", title: "Quickstart",
+    slug: "editor-quickstart", source: "docs/editor-quickstart.md",
+    blurb: "Get going with the SCF Editor, tab by tab" },
+  { group: "The editor", title: "Manual: Project",
+    slug: "editor-project", source: "docs/editor-manual-project.md",
+    blurb: "The Project tab, saving, file tabs, the menu and settings" },
+  { group: "The editor", title: "Manual: Script",
+    slug: "editor-script", source: "docs/editor-manual-script.md",
+    blurb: "Writing, formatting and committing in the Script tab" },
+  { group: "The editor", title: "Manual: Structure",
+    slug: "editor-structure", source: "docs/editor-manual-structure.md",
+    blurb: "Acts and sequences, and where each one starts" },
+  { group: "The editor", title: "Manual: Shoot",
+    slug: "editor-shoot", source: "docs/editor-manual-shoot.md",
+    blurb: "Beats, shots, storyboards and frames" },
+  { group: "The editor", title: "Manual: Characters",
+    slug: "editor-characters", source: "docs/editor-manual-characters.md",
+    blurb: "The character workspace, As of, boards and story strips" },
+  { group: "The editor", title: "Manual: Locations & props",
+    slug: "editor-locations-props",
+    source: "docs/editor-manual-locations-props.md",
+    blurb: "Variants, sound, prop states and script tags" },
+  { group: "The editor", title: "Manual: Tools",
+    slug: "editor-tools", source: "docs/editor-manual-tools.md",
+    blurb: "Subjects, Queries, Schema, Assets and the event log" },
+  { group: "The editor", title: "Manual: Presentation",
+    slug: "editor-presentation", source: "docs/editor-manual-presentation.md",
+    blurb: "Screenplay, storyboard, shot list and gallery, printed and shown" },
+
   { group: "Specification", title: "The specification",
     slug: "spec", source: "spec/scf-spec.md", anchors: true,
     blurb: "Normative. Everything the format requires" },
@@ -134,6 +163,17 @@ const ASSETS = {
   "apple-touch-icon.png": "docs/SCF_CI_Collection/favicon/apple-touch-icon.png",
 };
 
+/**
+ * Image folders a page refers to, copied whole. The key is the path
+ * under dist, and it matches the path relative to docs/, so a page's
+ * `images/...` link works both on the site and when the Markdown is
+ * read on GitHub.
+ */
+const IMAGE_DIRS = {
+  "images/editor-quickstart": "docs/images/editor-quickstart",
+  "images/editor-manual": "docs/images/editor-manual",
+};
+
 const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
   .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -153,7 +193,11 @@ for (const page of PAGES) {
   text = text.replace(/^<!--\s*SPDX-License-Identifier:[^>]*-->\s*\n/, "");
 
   const headings = [];
+  let fenced = false;
   for (const line of text.split("\n")) {
+    // A "# …" line inside a code block is code, not a heading.
+    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+    if (fenced) continue;
     const m = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
     if (!m) continue;
     const title = m[2].replace(/[`*]/g, "");
@@ -218,7 +262,12 @@ marked.use({
   renderer: {
     heading({ tokens, depth }) {
       const title = this.parser.parseInline(tokens);
-      const plain = title.replace(/<[^>]+>/g, "");
+      // Decode the entities marked emits ("&amp;", "&#39;") so the id
+      // matches the one the contents list derives from the source text.
+      const plain = title.replace(/<[^>]+>/g, "")
+        .replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+        .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+        .replace(/&amp;/g, "&");
       const num = /^(\d+(?:\.\d+)*)\.?\s+/.exec(plain);
       const id = num
         ? `s${num[1].replace(/\./g, "-")}`
@@ -258,8 +307,9 @@ function hero() {
 <p class="hero-lede">A film, described in a way a machine can answer questions about.</p>
 <p class="hero-actions">
 <a class="btn btn-primary" href="what-is-scf.html">What is SCF?</a>
+<a class="btn" href="editor-quickstart.html">Editor quickstart</a>
 <a class="btn" href="spec.html">Read the specification</a>
-<a class="btn btn-ghost" href="https://github.com/MinimalHumans/SCF_studio">GitHub</a>
+<a class="btn btn-ghost" href="https://github.com/MinimalHumans/scf">GitHub</a>
 </p>
 </header>`;
 }
@@ -326,7 +376,7 @@ for (const { page, text, headings } of docs) {
 <img src="assets/scf-full-white.svg" alt="SCF — Story Context Framework" width="200" height="59">
 </a>
 ${nav(page.slug)}
-<p class="repo"><a href="https://github.com/MinimalHumans/SCF_studio">Repository on GitHub</a></p>
+<p class="repo"><a href="https://github.com/MinimalHumans/scf">Repository on GitHub</a></p>
 <a class="maker" href="https://www.minimalhumans.com" target="_blank" rel="noopener">
 <span>Developed by</span>
 <img src="assets/mh-short.svg" alt="Minimal Humans" width="150" height="49">
@@ -381,6 +431,9 @@ cpSync(join(HERE, "style.css"), join(OUT, "style.css"));
 mkdirSync(join(OUT, "assets"), { recursive: true });
 for (const [name, source] of Object.entries(ASSETS)) {
   cpSync(join(ROOT, source), join(OUT, "assets", name));
+}
+for (const [dest, source] of Object.entries(IMAGE_DIRS)) {
+  cpSync(join(ROOT, source), join(OUT, dest), { recursive: true });
 }
 writeFileSync(join(OUT, ".nojekyll"), "", "utf8");
 

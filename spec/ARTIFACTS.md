@@ -25,20 +25,20 @@ below names the tag that addresses it:
   including candidates that change no schema.
 
 ```
-https://raw.githubusercontent.com/MinimalHumans/SCF_studio/schema-2.25/<path>
-https://raw.githubusercontent.com/MinimalHumans/SCF_studio/spec-1.0-rc.8/<path>
+https://raw.githubusercontent.com/MinimalHumans/scf/schema-2.25/<path>
+https://raw.githubusercontent.com/MinimalHumans/scf/spec-1.0-rc.8/<path>
 ```
 
 So the registry for this version is:
 
 ```
-https://raw.githubusercontent.com/MinimalHumans/SCF_studio/schema-2.25/scf-core/registry/registry.json
+https://raw.githubusercontent.com/MinimalHumans/scf/schema-2.25/scf-core/registry/registry.json
 ```
 
 and the specification is:
 
 ```
-https://raw.githubusercontent.com/MinimalHumans/SCF_studio/spec-1.0-rc.8/spec/scf-spec.md
+https://raw.githubusercontent.com/MinimalHumans/scf/spec-1.0-rc.8/spec/scf-spec.md
 ```
 
 Every file is also present, unchanged, at the spec tag: a

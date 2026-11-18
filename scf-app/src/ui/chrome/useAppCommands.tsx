@@ -7,6 +7,8 @@ import {
   commandForKey, runCommand, type CommandContext,
 } from "../../commands/registry.ts";
 import { useSettings } from "../../state/settings.ts";
+import { helpUrl } from "../../commands/help.ts";
+import { openExternal } from "../../host/externalLinks.ts";
 import { AboutDialog } from "./AboutDialog.tsx";
 import { SettingsDialog } from "./SettingsDialog.tsx";
 import { LicensesDialog } from "./LicensesDialog.tsx";
@@ -53,6 +55,15 @@ export function useAppCommands(screen: {
     showLicenses: () => { setLicensesOpen(true); },
     exitApp: () => { void invoke("quit_app"); },
     openEventLog: () => { useTabs.getState().openTool("events"); },
+    openHelp: () => {
+      const { navMode, characterTab } = useStore.getState();
+      const active = useTabs.getState().active;
+      openExternal(helpUrl({
+        hasProject: screen.hasProject,
+        tool: active === "project" ? null : active,
+        navMode, characterTab,
+      }));
+    },
   };
 
   const ctxRef = useRef(ctx);

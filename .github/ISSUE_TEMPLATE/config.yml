@@ -2,11 +2,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: Propose a change to the format
-    url: https://github.com/MinimalHumans/SCF_studio/tree/main/proposals
+    url: https://github.com/MinimalHumans/scf/tree/main/proposals
     about: >-
       Anything that changes what a conforming implementation must do goes
       through the proposal path, not an issue. Read proposals/README.md.
   - name: Report a security issue
-    url: https://github.com/MinimalHumans/SCF_studio/security/policy
+    url: https://github.com/MinimalHumans/scf/security/policy
     about: >-
       Privately, never in an issue. See SECURITY.md.

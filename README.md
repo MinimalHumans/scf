@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 <p align="center">
-  <a href="https://minimalhumans.github.io/SCF_studio/">
+  <a href="https://minimalhumans.github.io/scf/">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="docs/SCF_CI_Collection/SVG/logoFull_white.svg">
       <img src="docs/SCF_CI_Collection/SVG/logoFull_black.svg" alt="SCF — Story Context Framework" width="440">
@@ -15,17 +15,17 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MinimalHumans/SCF_studio/actions/workflows/ci.yml"><img src="https://github.com/MinimalHumans/SCF_studio/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://minimalhumans.github.io/SCF_studio/"><img src="https://img.shields.io/badge/docs-minimalhumans.github.io-1b6393" alt="Documentation"></a>
+  <a href="https://github.com/MinimalHumans/scf/actions/workflows/ci.yml"><img src="https://github.com/MinimalHumans/scf/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://minimalhumans.github.io/scf/"><img src="https://img.shields.io/badge/docs-minimalhumans.github.io-1b6393" alt="Documentation"></a>
   <a href="spec/stability.md"><img src="https://img.shields.io/badge/spec-1.0--rc.7-ef393b" alt="Specification: 1.0 release candidate"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/code-Apache--2.0-1b6393" alt="Code licence: Apache-2.0"></a>
   <a href="spec/LICENSE"><img src="https://img.shields.io/badge/prose-CC%20BY%204.0-f4af3f" alt="Prose licence: CC BY 4.0"></a>
 </p>
 
 <p align="center">
-  <a href="https://minimalhumans.github.io/SCF_studio/">Documentation</a> ·
-  <a href="https://minimalhumans.github.io/SCF_studio/what-is-scf.html">What is SCF?</a> ·
-  <a href="https://minimalhumans.github.io/SCF_studio/spec.html">Specification</a> ·
+  <a href="https://minimalhumans.github.io/scf/">Documentation</a> ·
+  <a href="https://minimalhumans.github.io/scf/what-is-scf.html">What is SCF?</a> ·
+  <a href="https://minimalhumans.github.io/scf/spec.html">Specification</a> ·
   <a href="#getting-started">Getting started</a> ·
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>

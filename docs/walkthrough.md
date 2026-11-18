@@ -30,8 +30,8 @@ Every published answer in the format is an answer about this film.
 ## Getting it
 
 ```sh
-git clone https://github.com/MinimalHumans/SCF_studio
-cd SCF_studio
+git clone https://github.com/MinimalHumans/scf
+cd scf
 ```
 
 The reference implementation is unpublished until 1.0, so you run it

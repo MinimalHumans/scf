@@ -92,8 +92,33 @@ export interface ScriptCommit {
  * two calls; a transaction cannot span a round trip to the host, so the
  * pair is one operation here.
  */
+/** One committed line's links, as the commit left them. */
+export interface CommittedLine {
+  uuid: string;
+  /** The text as stored: a rename in the review rewrites cue lines. */
+  content: string;
+  sceneId: number | null;
+  characterId: number | null;
+  locationId: number | null;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface ScriptCommitResult extends features.CommitLinkResult {
+  /**
+   * Every line's links after linking, in document order.
+   *
+   * Linking writes scene, character and location ids (and section
+   * bindings) onto the rows it is given. In-process that mutated the
+   * caller's own array, which is what the editor relied on; across the
+   * host the rows are a copy, so the ids never came back and every
+   * later commit took the same headings for unlinked ones and created
+   * their scenes again. The caller takes its baseline from this.
+   */
+  lines: CommittedLine[];
+}
+
 async function commitScript(
-    exec: SqlExec, p: ScriptCommit): Promise<features.CommitLinkResult> {
+    exec: SqlExec, p: ScriptCommit): Promise<ScriptCommitResult> {
   return withTransaction(exec, async () => {
     const link = await features.linkAndCreateAtCommit(exec, p.rows, {
       createNew: p.link.createNew,
@@ -105,7 +130,17 @@ async function commitScript(
     await writeScreenplay(exec, {
       bom: false, titlePage: p.titlePage, lines: p.rows,
     });
-    return link;
+    return {
+      ...link,
+      lines: p.rows.map((r) => ({
+        uuid: r.uuid ?? "",
+        content: r.content,
+        sceneId: r.sceneId,
+        characterId: r.characterId,
+        locationId: r.locationId,
+        metadata: r.metadata,
+      })),
+    };
   });
 }
 

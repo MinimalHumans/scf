@@ -129,6 +129,6 @@ Claude Desktop logs are in `~/Library/Logs/Claude/` on macOS and
 not published to npm, and runs only in the desktop app. It depends on
 `@minimalhumans/scf-core`, which carries the format's 1.0 promise; this
 does not yet make one. The design record is
-[`docs/scf-mcp-design.md`](https://github.com/MinimalHumans/SCF_studio/blob/main/docs/scf-mcp-design.md).
+[`docs/scf-mcp-design.md`](https://github.com/MinimalHumans/scf/blob/main/docs/scf-mcp-design.md).
 
 Apache-2.0. See `LICENSE` and `NOTICE`.
