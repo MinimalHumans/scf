@@ -120,6 +120,7 @@ Claude Desktop logs are in `~/Library/Logs/Claude/` on macOS and
 | `shot_context`, `shot_media`, `shot_readiness` | A shot prompt in three calls: the frame, what to attach, what is thin. |
 | one tool per canonical query | The specification's §12 queries, each with its own typed parameters. |
 | `readiness` | Q14, for pre-flight before writing a prompt. |
+| `editor_help` | How to use the editor itself, answered from its manual with a link to the online page. Needs no film open. |
 
 `scf-mcp/src/mcpServer.ts` lists them authoritatively.
 

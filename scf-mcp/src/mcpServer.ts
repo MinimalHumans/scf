@@ -25,6 +25,8 @@
  *                 generic bag, so a wrong one is a schema error before
  *                 the call is even sent, not a runtime failure
  *   readiness     Q14 directly, for pre-flight
+ *   editor_help   how to use the editor itself, from its manual
+ *                 (editorManual.ts) — needs no film
  *
  * Writing. The read tools above never change a film. The write tools
  * (writeTools.ts) do, and only in two steps: a plan the person can
@@ -65,6 +67,7 @@ import type { McpPlatform } from "./platform.ts";
 import { createProjectCache, registry } from "./projectCache.ts";
 import { FORMAT, registerQueryTools } from "./queryTools.ts";
 import { registerReadTools } from "./readTools.ts";
+import { registerEditorHelp } from "./editorManual.ts";
 import { err, ok, text } from "./toolResult.ts";
 
 export interface ServerOptions {
@@ -128,7 +131,11 @@ export async function createScfMcpServer(
       "- `readiness` is pre-flight: what's thin for a target query " +
       "(voice_direction, physical_direction, look_resolution, soundscape, " +
       "media_resolution, or subject_in_context) at a given position, " +
-      "before you write a prompt that depends on it.\n\n" +
+      "before you write a prompt that depends on it.\n" +
+      "- `editor_help` is for the SCF Editor app itself, not the film: " +
+      "how to do something in a tab, what a button does. It answers " +
+      "from the editor's manual with a link to the online page, and " +
+      "needs no film open.\n\n" +
       (config.readOnly
         ? "This server is read-only: it offers no write tools."
         : "Changing the film is deliberately two steps. `create_row`, " +
@@ -455,6 +462,7 @@ export async function createScfMcpServer(
 
   registerQueryTools(server, cache);
   registerReadTools(server, cache);
+  registerEditorHelp(server);
   registerJournalTool(server, cache);
   if (!config.readOnly) {
     registerWriteTools({ server, cache, elicit: options.elicit ?? true });

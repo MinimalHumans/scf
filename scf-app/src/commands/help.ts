@@ -13,8 +13,10 @@
 import type { NavMode } from "../state/store.ts";
 import type { CharacterTab } from "../state/characterLayout.ts";
 import type { ToolId } from "../state/tabs.ts";
+// The MCP's `editor_help` answers from the same manual; one address.
+import { MANUAL_BASE } from "@scf-mcp/editorManual.ts";
 
-export const MANUAL_BASE = "https://minimalhumans.github.io/scf/";
+export { MANUAL_BASE };
 
 const QUICKSTART = "editor-quickstart.html";
 

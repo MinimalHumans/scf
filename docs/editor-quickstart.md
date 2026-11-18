@@ -302,6 +302,8 @@ Then just ask, in plain language:
 - *"What is Eleanor wearing in scene 12, and what state is she in?"*
 - *"Write an image prompt for shot 9C."*
 - *"Which scenes aren't ready to shoot yet, and why?"*
+- *"How do I stop the editor renumbering my scenes?"* The assistant
+  has this manual too, and answers with a link to the right page.
 
 **The assistant and the editor share one live session.** If the
 assistant changes something, it shows up in the editor straight away,
@@ -322,4 +324,6 @@ has the full list of tools and the setup for other clients.
 - [Glossary](glossary.html) has plain-language definitions for the
   terms you'll run into.
 
-A full editor manual is on its way.
+The editor manual covers each tab in full, starting with the
+[Project tab](editor-project.html). Press **F1** in the editor to open
+it at the tab you're on.
