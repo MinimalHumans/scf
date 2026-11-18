@@ -53,6 +53,9 @@ const CHARACTER_SECTIONS: Record<CharacterTab, string> = {
 
 const TOOL_PAGES: Record<ToolId, string> = {
   events: "editor-tools.html#event-log",
+  // The manual has no section for these two yet; the tools page is closest.
+  media: "editor-tools.html#assets",
+  settings: "editor-tools.html",
 };
 
 export interface HelpView {
