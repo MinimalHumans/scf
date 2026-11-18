@@ -41,9 +41,10 @@ export default defineConfig({
     // writing stops the watcher (EBUSY on Windows) and with it the server.
     watch: { ignored: ["**/src-tauri/**"] },
     // The page loads its sibling packages as source (the aliases below);
-    // Vite serves nothing outside this one unless told it may.
+    // Vite serves nothing outside this one unless told it may. `docs` is
+    // the editor's manual, which scf-mcp bundles for `editor_help`.
     fs: {
-      allow: [here, ...["scf-core", "scf-host", "scf-mcp"]
+      allow: [here, ...["scf-core", "scf-host", "scf-mcp", "docs"]
         .map((p) => resolve(here, "..", p))],
     },
   },

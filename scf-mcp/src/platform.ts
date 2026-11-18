@@ -27,6 +27,12 @@ export interface McpPlatform {
   /** `app.db` (file-management-plan.md §3.1): recent files and asset
    *  roots, shared with the editor's window. */
   appStore: AppStore;
+  /**
+   * What tells this machine from another, the same every time it is
+   * asked (`sessionId.ts` salts session ids with it). Empty where the
+   * machine will not say.
+   */
+  machineId(): Promise<string>;
   /** A config file's text (`--config`). */
   readText(path: string): Promise<string>;
   /** Something worth a line in the client's server log. */

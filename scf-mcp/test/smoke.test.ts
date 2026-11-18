@@ -16,7 +16,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { CATALOG, toolNameFor } from "../src/queryTools.ts";
-import { FIXTURE, callTool, startServer, type Server } from "./helpers.ts";
+import {
+  FIXTURE, callTool, inSession, openFilm, startServer, type Server,
+} from "./helpers.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCENE12 = "06857531-3e91-41a9-95dd-3262407d8132";
@@ -25,9 +27,31 @@ const ELEANOR = "1afb7bf0-8cee-4e2f-9e8e-015f9b2aaf64";
 const QUERY_TOOL_NAMES = CATALOG.map((spec) => toolNameFor(spec.title));
 
 describe("scf-mcp server — a default project set at startup", () => {
+  let started: Server;
+  /** `started`, in the session `--scf` gave the film. */
   let server: Server;
-  beforeAll(async () => { server = await startServer(["--scf", FIXTURE]); });
-  afterAll(() => { server.kill(); });
+  beforeAll(async () => {
+    started = await startServer(["--scf", FIXTURE]);
+    server = inSession(started, await openFilm(started, FIXTURE));
+  });
+  afterAll(() => { started.kill(); });
+
+  test("the film --scf opened has a session, and the instructions " +
+      "give it", async () => {
+    const opened = await openFilm(started, FIXTURE);
+    expect(opened).toMatch(/^[0-9a-z]{4,}$/);
+    expect(started.instructions).toContain(
+      `\`${FIXTURE}\` is already open: its \`file_id\` is \`${opened}\``);
+    // Without the id there is nothing to fall back on, startup film or
+    // not; the refusal says which session to use.
+    const r = await callTool(started, "find",
+      { entityType: "scene", label: "12" });
+    expect(r.isError).toBe(true);
+    expect(r.json).toMatchObject({
+      code: "invalid_session", rejected_file_id: null,
+      open_sessions: [{ file_id: opened, path: FIXTURE }],
+    });
+  });
 
   test("lists open/recent_files/set_root/find/list, the three shot calls, " +
       "readiness plus one semantically-named tool per canonical query " +
@@ -36,7 +60,8 @@ describe("scf-mcp server — a default project set at startup", () => {
       { tools: Array<{ name: string }> };
     expect(result.tools.map((t) => t.name).sort()).toEqual([
       ...QUERY_TOOL_NAMES,
-      "add_shot", "character_presence", "create_row", "delete_row", "find",
+      "add_shot", "character_presence", "create_row", "delete_row",
+      "editor_help", "find",
       "gallery", "list", "move_shot", "open", "readiness", "recent_changes",
       "recent_files", "set_root", "shot_list",
       "set_shot_cut", "set_title_page_key", "shot_context", "shot_media",
@@ -347,24 +372,30 @@ describe("scf-mcp server — a default project set at startup", () => {
 
 describe("scf-mcp server — no default project", () => {
   let server: Server;
+  let session: string;
   beforeAll(async () => { server = await startServer([]); });
   afterAll(() => { server.kill(); });
 
-  test("a tool call with nothing open yet fails clearly, not silently",
-      async () => {
-    const result = await server.send("tools/call", {
-      name: "find", arguments: { entityType: "scene", label: "12" },
-    }) as { content: Array<{ text: string }>; isError?: boolean };
-    expect(result.isError).toBe(true);
-    expect(result.content[0]?.text).toMatch(/no film open/);
+  test("a tool call with nothing open yet is an invalid session, with " +
+      "nothing to reuse", async () => {
+    const r = await callTool(server, "find",
+      { entityType: "scene", label: "12" });
+    expect(r.isError).toBe(true);
+    expect(r.json).toEqual({
+      code: "invalid_session",
+      message: "Session '' is invalid or unavailable. Call `open` to " +
+        "continue. Reuse a session from `open_sessions`, or call `open` " +
+        "with a file path.",
+      rejected_file_id: null, open_sessions: [], recent_files: [],
+    });
   });
 
   test("set_root with nothing open yet fails the same way", async () => {
-    const result = await server.send("tools/call", {
-      name: "set_root", arguments: { roots: { project: HERE } },
-    }) as { content: Array<{ text: string }>; isError?: boolean };
-    expect(result.isError).toBe(true);
-    expect(result.content[0]?.text).toMatch(/no film open/);
+    const r = await callTool(server, "set_root",
+      { roots: { project: HERE } });
+    expect(r.isError).toBe(true);
+    expect(r.json).toMatchObject(
+      { code: "invalid_session", rejected_file_id: null });
   });
 
   test("recent_files says so when nothing has been opened yet",
@@ -376,7 +407,8 @@ describe("scf-mcp server — no default project", () => {
     expect(result.content[0]?.text).toBe("(no films opened yet)");
   });
 
-  test("open reports a real summary of the fixture", async () => {
+  test("open reports a real summary of the fixture, and its session",
+      async () => {
     const result = await server.send("tools/call", {
       name: "open", arguments: { scfPath: FIXTURE },
     }) as { content: Array<{ text: string }>; isError?: boolean };
@@ -386,6 +418,8 @@ describe("scf-mcp server — no default project", () => {
     expect(summary.sceneCount).toBeGreaterThan(0);
     expect(summary.shotCount).toBeGreaterThan(0);
     expect(summary.rootMapped).toBe(false);
+    expect(summary.file_id).toMatch(/^[0-9a-z]{4,}$/);
+    session = summary.file_id;
   });
 
   test("recent_files lists it once opened", async () => {
@@ -396,15 +430,253 @@ describe("scf-mcp server — no default project", () => {
     expect(result.content[0]?.text).toBe(FIXTURE);
   });
 
-  test("after open, other tools default to it with no scfPath",
+  test("after open, other tools reach the film by its file_id",
       async () => {
     const result = await server.send("tools/call", {
-      name: "find", arguments: { entityType: "scene", label: "12" },
+      name: "find",
+      arguments: { file_id: session, entityType: "scene", label: "12" },
     }) as { content: Array<{ text: string }>; isError?: boolean };
     expect(result.isError).toBeUndefined();
     const hits = JSON.parse(result.content[0]?.text ?? "[]");
     expect(hits).toEqual([{ uuid: SCENE12, entity: "scene", label: "12" }]);
   });
+
+  test("and only by it: the film opened last is not a default",
+      async () => {
+    const r = await callTool(server, "find",
+      { entityType: "scene", label: "12" });
+    expect(r.isError).toBe(true);
+    expect(r.json).toMatchObject({
+      code: "invalid_session", rejected_file_id: null,
+      open_sessions: [{ file_id: session, path: FIXTURE }],
+      recent_files: [FIXTURE],
+    });
+  });
+
+  test("a film that cannot be opened gets no session", async () => {
+    const r = await callTool(server, "open",
+      { scfPath: join(HERE, "no-such-film.scf") });
+    expect(r.isError).toBe(true);
+    expect(r.json).toBeNull();           // the host's message, not a payload
+    const refused = await callTool(server, "find",
+      { file_id: "nope", entityType: "scene", label: "12" });
+    expect((refused.json as { open_sessions: unknown[] }).open_sessions)
+      .toEqual([{ file_id: session, path: FIXTURE }]);
+  });
+});
+
+describe("scf-mcp server — sessions", () => {
+  let dir: string;
+  let server: Server;
+  let one: string;
+  let two: string;
+  let first: string;
+  let second: string;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), "scf-mcp-sessions-"));
+    one = join(dir, "one.scf");
+    two = join(dir, "two.scf");
+    copyFileSync(FIXTURE, one);
+    copyFileSync(FIXTURE, two);
+    server = await startServer([]);
+    first = await openFilm(server, one);
+    second = await openFilm(server, two);
+  }, 60_000);
+  afterAll(() => {
+    server.kill();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Which film a session's calls reach: `recent_changes` names it. */
+  const filmOf = async (sessionId: string): Promise<string> =>
+    ((await callTool(server, "recent_changes", { file_id: sessionId }))
+      .json as { film: string }).film;
+
+  test("each film has its own session, and a call goes where its " +
+      "file_id says whichever film was opened last", async () => {
+    expect(first).not.toBe(second);
+    expect(await filmOf(first)).toBe(one);
+    expect(await filmOf(second)).toBe(two);
+    expect(await filmOf(first)).toBe(one);
+  });
+
+  test("opening a film that is already open answers as the first open " +
+      "did, with the same session", async () => {
+    const again = await callTool(server, "open", { scfPath: one });
+    const fresh = await callTool(server, "open", { scfPath: one });
+    expect(again.isError).toBe(false);
+    expect((again.json as { file_id: string }).file_id).toBe(first);
+    expect(Object.keys(again.json as object).sort()).toEqual([
+      "file_id", "opened", "project", "revision", "rootMapped", "roots",
+      "sceneCount", "shotCount", "writable"]);
+    expect(fresh.json).toEqual(again.json);
+    // Opening the first again did not make it anybody's default.
+    expect(await filmOf(second)).toBe(two);
+  });
+
+  test("set_root maps a root for its own session's film only", async () => {
+    const r = await callTool(server, "set_root",
+      { file_id: first, roots: { project: HERE } });
+    expect(r.isError).toBe(false);
+    const mapped = async (path: string): Promise<boolean> =>
+      ((await callTool(server, "open", { scfPath: path })).json as
+        { rootMapped: boolean }).rootMapped;
+    expect(await mapped(one)).toBe(true);
+    expect(await mapped(two)).toBe(false);
+  });
+
+  test("an unknown, malformed or missing file_id is one error, " +
+      "invalid_session, with the sessions and files to go on from",
+      async () => {
+    const sessions = [
+      { file_id: first, path: one }, { file_id: second, path: two }];
+    const shouted = `${first.toUpperCase()}-`;
+    for (const [given, rejected] of [
+      ["zzzz", "zzzz"], ["not a session id!", "not a session id!"],
+      [shouted, shouted],
+      ["", null], [12, null], [null, null], [undefined, null],
+    ] as const) {
+      const r = await callTool(server, "find", {
+        ...(given === undefined ? {} : { file_id: given }),
+        entityType: "scene", label: "12" });
+      expect(r.isError, String(given)).toBe(true);
+      expect(r.json, String(given)).toEqual({
+        code: "invalid_session",
+        message: `Session '${rejected ?? ""}' is invalid or unavailable. ` +
+          "Call `open` to continue. Reuse a session from `open_sessions`, " +
+          "or call `open` with a file path.",
+        rejected_file_id: rejected,
+        open_sessions: sessions,
+        recent_files: [two, one],
+      });
+    }
+  });
+
+  test("every tool but open, recent_files and editor_help takes a " +
+      "required file_id, and says what to do without one", async () => {
+    const listed = await server.send("tools/list") as { tools: Array<{
+      name: string; description: string;
+      inputSchema: { required?: string[];
+                     properties: Record<string, { type?: string }> } }> };
+    for (const tool of listed.tools) {
+      const takes = tool.inputSchema.required?.includes("file_id") === true;
+      if (tool.name === "open" || tool.name === "recent_files" ||
+          tool.name === "editor_help") {
+        expect(takes, tool.name).toBe(false);
+        continue;
+      }
+      expect(takes, tool.name).toBe(true);
+      expect(tool.inputSchema.properties["file_id"]?.type, tool.name)
+        .toBe("string");
+      expect(tool.description, tool.name).toContain("`file_id`");
+      expect(tool.description, tool.name).toContain("`invalid_session`");
+    }
+    expect(listed.tools.find((t) => t.name === "open")?.description)
+      .toContain("`file_id`");
+    expect(server.instructions).toContain("`file_id`");
+    expect(server.instructions).toContain("`invalid_session`");
+  });
+
+  test("the session is checked before the tool does anything: one call " +
+      "of each kind of tool, with a session that is not there", async () => {
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ["set_root", { roots: { project: HERE } }],
+      ["list", { entityType: "scene" }],
+      ["where_used", { entityType: "scene", uuid: SCENE12 }],
+      ["shot_context", { shotUuid: SHOT1204 }],
+      ["shot_media", { shotUuid: SHOT1204 }],
+      ["shot_readiness", { shotUuid: SHOT1204 }],
+      ["readiness", { queryId: "Q07", params: { scene: SCENE12 } }],
+      ["scene_package", { scene: SCENE12 }],
+      ["shot_list", {}], ["gallery", {}],
+      ["character_presence", { characterUuid: ELEANOR }],
+      ["recent_changes", {}],
+      ["update_row", { entityType: "character", uuid: ELEANOR,
+                       values: { summary: "Never planned." } }],
+      ["add_shot", { sceneUuid: SCENE12 }],
+    ];
+    for (const [name, args] of calls) {
+      const r = await callTool(server, name, { file_id: "gone", ...args });
+      expect(r.isError, name).toBe(true);
+      expect(r.json, name).toMatchObject(
+        { code: "invalid_session", rejected_file_id: "gone" });
+    }
+  });
+
+  test("a session whose file is gone is invalid, and is not offered " +
+      "for reuse", async () => {
+    unlinkSync(two);
+    const r = await callTool(server, "list",
+      { file_id: second, entityType: "scene" });
+    expect(r.isError).toBe(true);
+    expect(r.json).toMatchObject({
+      code: "invalid_session", rejected_file_id: second,
+      open_sessions: [{ file_id: first, path: one }],
+    });
+    // Put back, the film opens again — as a new session, not the old one.
+    copyFileSync(FIXTURE, two);
+    const reopened = await openFilm(server, two);
+    expect(reopened).not.toBe(second);
+    expect(await filmOf(reopened)).toBe(two);
+    expect((await callTool(server, "list",
+      { file_id: second, entityType: "scene" })).isError).toBe(true);
+  });
+});
+
+describe("scf-mcp server — a session id is never given twice", () => {
+  test("a new server does not know an earlier one's sessions, and " +
+      "gives the same film a different id", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "scf-mcp-test-"));
+    try {
+      const first = await startServer([], configDir);
+      const before = await openFilm(first, FIXTURE);
+      await new Promise((r) => { setTimeout(r, 200); });
+      first.kill();
+
+      const second = await startServer([], configDir);
+      try {
+        const stale = await callTool(second, "find",
+          { file_id: before, entityType: "scene", label: "12" });
+        expect(stale.isError).toBe(true);
+        expect(stale.json).toMatchObject({
+          code: "invalid_session", rejected_file_id: before,
+          open_sessions: [], recent_files: [FIXTURE],
+        });
+        const after = await openFilm(second, FIXTURE);
+        expect(after).not.toBe(before);
+        // Opening it here did not bring the old id back.
+        expect((await callTool(second, "find", { file_id: before,
+          entityType: "scene", label: "12" })).isError).toBe(true);
+      } finally {
+        second.kill();
+      }
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
+  });
+
+  test("two servers on one app.db never give the same id", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "scf-mcp-test-"));
+    const dir = mkdtempSync(join(tmpdir(), "scf-mcp-sessions-"));
+    const a = await startServer([], configDir);
+    const b = await startServer([], configDir);
+    try {
+      const films = Array.from({ length: 6 }, (_, i) => {
+        const film = join(dir, `film-${String(i)}.scf`);
+        copyFileSync(FIXTURE, film);
+        return film;
+      });
+      const ids = await Promise.all(films.flatMap((film) =>
+        [openFilm(a, film), openFilm(b, film)]));
+      expect(new Set(ids).size).toBe(ids.length);
+    } finally {
+      a.kill();
+      b.kill();
+      rmSync(configDir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 describe("scf-mcp server — recent_files persists across restarts", () => {
@@ -446,10 +718,8 @@ describe("scf-mcp server — set_root persists and a later open falls " +
     try {
       const first = await startServer([], configDir);
       try {
-        await first.send("tools/call", {
-          name: "open", arguments: { scfPath: FIXTURE },
-        });
         await callTool(first, "set_root", {
+          file_id: await openFilm(first, FIXTURE),
           roots: { project: HERE },
         });
       } finally {
@@ -524,11 +794,11 @@ describe("scf-mcp server — no film is held open between calls", () => {
     copyFileSync(FIXTURE, film);
     const server = await startServer([]);
     try {
+      const file_id = await openFilm(server, film);
       const call = (name: string, args: Record<string, unknown>) =>
-        server.send("tools/call", { name, arguments: args }) as
-          Promise<{ isError?: boolean }>;
-      expect((await call("open", { scfPath: film })).isError)
-        .toBeUndefined();
+        server.send("tools/call", {
+          name, arguments: { file_id, ...args },
+        }) as Promise<{ isError?: boolean }>;
       expect((await call("shot_context", { shotUuid: SHOT1204 })).isError)
         .toBeUndefined();
       expect((await call("list", { entityType: "scene" })).isError)

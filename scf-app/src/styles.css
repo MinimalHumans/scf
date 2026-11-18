@@ -1336,7 +1336,13 @@ ul { list-style: none; margin: 0; padding: 0; }
 .rail-menu button.danger:hover:not(:disabled) {
   background: var(--blocker); color: var(--ink-0);
 }
-.rail-confirm { max-width: 420px; }
+/* Its own panel: .modal on its own draws nothing, so without these the
+   Remove dialog was bare text over the script. */
+.rail-confirm {
+  background: var(--ink-0, #12151a); border: 1px solid var(--line);
+  border-radius: 6px; width: min(420px, 92vw); max-height: 88vh;
+  overflow: auto; padding: 16px 20px;
+}
 .rail-confirm h3 { margin-top: 0; }
 .rail-confirm p { font-size: 12.5px; margin: 8px 0; }
 .numbering-confirm {

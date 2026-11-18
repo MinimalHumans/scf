@@ -13,7 +13,8 @@ import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { openNodeDatabase } from "@minimalhumans/scf-core/node";
 import {
-  FIXTURE, HOST_DIR, callTool, startServer, type Server,
+  FIXTURE, HOST_DIR, callTool, inSession, openFilm, startServer,
+  type Server,
 } from "./helpers.ts";
 
 const SCENE12 = "06857531-3e91-41a9-95dd-3262407d8132";
@@ -42,19 +43,20 @@ interface PlanResult {
 describe("the write tools", () => {
   let dir: string;
   let film: string;
+  let started: Server;
+  /** `started`, in the session of the film this test opened. */
   let server: Server;
 
   beforeAll(async () => {
-    server = await startServer([]);
+    started = await startServer([]);
   }, 60_000);
-  afterAll(() => { server.kill(); });
+  afterAll(() => { started.kill(); });
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "scf-mcp-write-"));
     film = join(dir, "film.scf");
     copyFileSync(FIXTURE, film);
-    expect((await callTool(server, "open", { scfPath: film })).isError)
-      .toBe(false);
+    server = inSession(started, await openFilm(started, film));
   }, 60_000);
   afterAll(() => { /* per-test dirs are removed with the OS tmp */ });
 
@@ -606,7 +608,7 @@ describe("the write tools", () => {
     await db.exec(
       "UPDATE _scf_meta SET value = '1.0' WHERE key = 'schema_version'");
     db.close();
-    await callTool(server, "open", { scfPath: old });
+    server = inSession(started, await openFilm(started, old));
     const r = await call("create_row",
       { entityType: "character", values: { name: "X" } });
     expect(r.isError).toBe(true);
@@ -653,7 +655,7 @@ describe("a client that can ask the person", () => {
     dir = mkdtempSync(join(tmpdir(), "scf-mcp-elicit-"));
     film = join(dir, "film.scf");
     copyFileSync(FIXTURE, film);
-    await callTool(server, "open", { scfPath: film });
+    server = inSession(server, await openFilm(server, film));
   }, 60_000);
   afterAll(() => {
     server.kill();

@@ -41,6 +41,8 @@ export interface CommandContext {
   openEventLog(): void;
   /** Open the media dashboard tab, or bring it forward. */
   openMediaDashboard(): void;
+  /** Open the manual at the page for what is on screen. */
+  openHelp(): void;
 }
 
 export interface Command {
@@ -105,6 +107,10 @@ export const COMMANDS: readonly Command[] = [
     hidden: (c) => !c.developerMode, disabled: needsProject, checked: (c) => c.identityOpen,
     run: (c) => { c.toggleIdentity(); } },
 
+  // F1 opens the manual at the page for the tab in front, so the help a
+  // user reaches for is about what they are looking at.
+  { id: "help.manual", label: "Help for this tab", menu: "Help",
+    shortcut: "F1", run: (c) => { c.openHelp(); } },
   { id: "help.about", label: "About SCF Editor", menu: "Help",
     run: (c) => { c.showAbout(); } },
   { id: "help.licenses", label: "Open Source Licenses", menu: "Help",
@@ -183,9 +189,14 @@ export function commandForKey(
     e: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "shiftKey" |
                            "altKey">,
     commands: readonly Command[] = COMMANDS): Command | undefined {
-  if (e.altKey || !(e.ctrlKey || e.metaKey)) return undefined;
+  if (e.altKey) return undefined;
+  const ctrl = e.ctrlKey || e.metaKey;
+  // A function key is a shortcut on its own; anything else needs Ctrl,
+  // so plain typing never reaches a command.
+  if (!ctrl && !/^F([1-9]|1[0-2])$/.test(e.key)) return undefined;
   const typed = [
-    "CTRL", ...(e.shiftKey ? ["SHIFT"] : []), e.key.toUpperCase(),
+    ...(ctrl ? ["CTRL"] : []), ...(e.shiftKey ? ["SHIFT"] : []),
+    e.key.toUpperCase(),
   ].join("+");
   return commands.find((c) => c.shortcut?.toUpperCase() === typed);
 }

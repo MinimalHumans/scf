@@ -7,7 +7,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MinimalHumans/SCF_studio.git",
+    "url": "git+https://github.com/MinimalHumans/scf.git",
     "directory": "scf-host"
   },
   "exports": {

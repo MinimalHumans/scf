@@ -110,8 +110,8 @@ Each package has its own `package-lock.json`. The editor runs the other
 three from source, so install all four, once:
 
 ```sh
-git clone git@github.com:MinimalHumans/SCF_studio.git
-cd SCF_studio
+git clone git@github.com:MinimalHumans/scf.git
+cd scf
 (cd scf-core && npm ci) && (cd scf-host && npm ci) && (cd scf-mcp && npm ci)
 cd scf-app && npm ci
 ```

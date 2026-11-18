@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # The road to SCF 1.0 — release checklist
 
-**Rev 14**, checked against `SCF_studio@main` at `37d47d5`
+**Rev 14**, checked against `scf@main` at `37d47d5`
 (2026-10-06) — spec **0.61**, schema **2.21**. Regenerated from the
 tree, not edited forward from rev 13, which described spec 0.51 and
 schema 2.13 and had drifted the way every untracked description here

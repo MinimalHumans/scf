@@ -23,6 +23,11 @@ function externalUrl(href: string): string | null {
   }
 }
 
+/** Open an http(s) address in the system browser. */
+export function openExternal(url: string): void {
+  open(url);
+}
+
 function open(url: string): void {
   void openUrl(url).catch((e: unknown) => {
     console.error("Could not open link", url, e);

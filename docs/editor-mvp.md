@@ -3,7 +3,7 @@
 
 Consolidated from the second-implementation design doc
 (`20260715_SCF_Second_Implementation.md`, never in the repository) and
-checked against `SCF_studio@main`, 2026-08-26 — spec 0.51, schema 2.13.
+checked against `scf@main`, 2026-08-26 — spec 0.51, schema 2.13.
 **Updated 2026-10-08** (spec 0.63, schema 2.22): §7b's open decision is
 closed, and §9 is answered — the editor is not part of the format's 1.0
 (`release-checklist.md` §A10).

@@ -12,7 +12,7 @@ const ctx = (over: Partial<CommandContext> = {}): CommandContext => ({
   saveProjectAs: vi.fn(),
   closeProject: vi.fn(), attachFolder: vi.fn(), toggleIdentity: vi.fn(),
   showAbout: vi.fn(), showSettings: vi.fn(), showLicenses: vi.fn(),
-  exitApp: vi.fn(), openEventLog: vi.fn(), ...over,
+  exitApp: vi.fn(), openEventLog: vi.fn(), openHelp: vi.fn(), ...over,
 });
 
 const key = (k: string, mods: { shift?: boolean; alt?: boolean } = {}) => ({
@@ -67,10 +67,12 @@ describe("menu model", () => {
     expect(c.openEventLog).toHaveBeenCalledOnce();
   });
 
-  test("Open Source Licenses sits in Help, next to About", () => {
+  test("Help opens the manual first, then About and the licenses", () => {
     const c = ctx({ hasProject: false });
     expect(menuModel(c)[2]!.items.map((i) => i.id))
-      .toEqual(["help.about", "help.licenses"]);
+      .toEqual(["help.manual", "help.about", "help.licenses"]);
+    expect(runCommand("help.manual", c)).toBe(true);
+    expect(c.openHelp).toHaveBeenCalledOnce();
     expect(runCommand("help.licenses", c)).toBe(true);
     expect(c.showLicenses).toHaveBeenCalledOnce();
   });
@@ -149,6 +151,15 @@ describe("shortcuts", () => {
 
   test("Shift distinguishes Save as from a bare S", () => {
     expect(commandForKey(key("s"))).toBeUndefined();
+  });
+
+  test("F1 alone opens the manual; other function keys and F1 chords don't", () => {
+    const plain = { key: "F1", ctrlKey: false, metaKey: false,
+                    shiftKey: false, altKey: false };
+    expect(commandForKey(plain)?.id).toBe("help.manual");
+    expect(commandForKey({ ...plain, key: "F2" })).toBeUndefined();
+    expect(commandForKey({ ...plain, ctrlKey: true })).toBeUndefined();
+    expect(commandForKey({ ...plain, altKey: true })).toBeUndefined();
   });
 
   test("Ctrl+I is bound to row identity, Ctrl+, to Settings", () => {

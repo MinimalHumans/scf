@@ -105,6 +105,12 @@ body::before {
 main { flex: 1; min-width: 0; padding: 2.75rem 2rem 6rem; }
 .page { min-width: 0; max-width: 52rem; }
 article { overflow-wrap: break-word; }
+article img {
+  display: block; max-width: 100%; height: auto; margin: 1rem 0 1.5rem;
+  border: 1px solid var(--rule); border-radius: 6px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / .18);
+}
+li > p > img, li > img { margin: .75rem 0 1rem; }
 
 h1, h2, h3, h4, h5, h6 { line-height: 1.25; scroll-margin-top: 1.5rem; }
 h1 {
