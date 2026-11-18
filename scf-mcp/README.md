@@ -112,8 +112,9 @@ Claude Desktop logs are in `~/Library/Logs/Claude/` on macOS and
 
 | Tool | What it answers |
 |---|---|
-| `open` | Open, or switch to, a film, with optional root mappings. |
-| `recent_files` | Films this or a past session opened — a hint for `open`. |
+| `open` | Open a film, with optional root mappings. Returns its `file_id`. |
+| `recent_files` | Films this or an earlier server opened — a hint for `open`. |
+| `set_root` | Map a film's `@name/…` media to a folder on this machine. |
 | `find` | A label (scene number, shot code, name) to its uuid. |
 | `list` | Every row of an entity type, optionally filtered, in story order where rows have one. |
 | `where_used` | Which rows point at this one. |
@@ -123,6 +124,17 @@ Claude Desktop logs are in `~/Library/Logs/Claude/` on macOS and
 | `editor_help` | How to use the editor itself, answered from its manual with a link to the online page. Needs no film open. |
 
 `scf-mcp/src/mcpServer.ts` lists them authoritatively.
+
+**A film is named by its session.** `open` returns a `file_id`, and
+every tool except `open` and `recent_files` takes it and works on that
+film and no other. There is no "current" film: an assistant that runs
+several conversations on one server (Claude Desktop does) can have a
+different film open in each. A call whose `file_id` is missing or
+names no session here — the server restarted, the file is gone — is
+answered with an `invalid_session` error that lists the sessions that
+are open and the recent files, and the way on is to call `open` again.
+An id is never given to a second session, so one left over in an old
+conversation cannot come to mean another film.
 
 ## Status
 

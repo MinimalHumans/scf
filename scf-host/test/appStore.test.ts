@@ -164,6 +164,30 @@ describe("two writers", () => {
       await b.close();
     }
   });
+
+  test("bumpPref counts from 1, never gives two callers the same " +
+      "number, and keeps counting after a reopen", async () => {
+    const path = join(dir, "app.db");
+    const a = await openNodeAppStore(path);
+    const b = await openNodeAppStore(path);
+    try {
+      expect(await a.bumpPref("counter")).toBe(1);
+      const given = await Promise.all(Array.from({ length: 20 },
+        (_, i) => (i % 2 === 0 ? a : b).bumpPref("counter")));
+      expect([...given].sort((x, y) => x - y))
+        .toEqual(Array.from({ length: 20 }, (_, i) => i + 2));
+      expect(await b.getPref("counter")).toBe("21");
+    } finally {
+      await a.close();
+      await b.close();
+    }
+    const again = await openNodeAppStore(path);
+    try {
+      expect(await again.bumpPref("counter")).toBe(22);
+    } finally {
+      await again.close();
+    }
+  });
 });
 
 describe("corruption", () => {

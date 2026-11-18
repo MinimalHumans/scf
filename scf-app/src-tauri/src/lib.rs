@@ -19,6 +19,7 @@
 
 mod claude_desktop;
 mod files;
+mod machine;
 mod mcp_relay;
 mod pipe;
 mod sql;
@@ -455,6 +456,7 @@ pub fn run() {
         files::fs_mkdir,
         files::fs_remove,
         files::fs_rename,
+        machine::machine_id,
     ]);
     builder
         .build(tauri::generate_context!())

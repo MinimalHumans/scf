@@ -101,6 +101,12 @@ export interface AppStore {
 
   getPref(key: string): Promise<string | null>;
   setPref(key: string, value: string): Promise<void>;
+  /**
+   * Add one to the whole number `key` holds and return the new value,
+   * starting from 1. One statement, so two callers never get the same
+   * number, whichever connection or process each is on.
+   */
+  bumpPref(key: string): Promise<number>;
 }
 
 export interface OpenAppStoreOptions {
@@ -378,6 +384,14 @@ function createStore(db: AppDb, caseInsensitiveKeys: boolean): AppStore {
         "INSERT INTO pref (key, value) VALUES (?, ?) " +
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         [key, value]);
+    },
+    bumpPref: async (key) => {
+      const rows = await db.exec(
+        "INSERT INTO pref (key, value) VALUES (?, '1') " +
+        "ON CONFLICT(key) DO UPDATE SET " +
+        "value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) RETURNING value",
+        [key]);
+      return Number(rows[0]!["value"]);
     },
   };
 }

@@ -8,7 +8,7 @@
  * answers, and disconnects (`withProject`). The host lets go of a film
  * when its last client does, so on Windows — where an open handle stops
  * any other program renaming, replacing or deleting the file — a film
- * this session has looked at is not held against the editor saving it
+ * this server has looked at is not held against the editor saving it
  * or the fixture build rewriting it. A connection per call costs a few
  * milliseconds and means a call answers from what is on disk when it
  * runs.
@@ -17,36 +17,42 @@
  * Desktop, an editor, whatever) spawns once and keeps running for its
  * whole session — there is no per-conversation process, and the MCP
  * protocol gives a stdio server no conversation identifier to key
- * state on. Requiring `--scf` at launch made "point this at a
- * different film" mean editing the client's config and restarting it.
+ * state on. A client may put every conversation it has on that one
+ * process, so "the film this server opened last" is not any one
+ * conversation's film.
  *
- * The fix doesn't need a conversation id: a server is one per client
- * session, so "the film this session has open" is the server's own
- * state, held in the cache `createProjectCache` makes for it. (In the
- * desktop app several clients' servers share one window, so this is not
- * module state.) `open` takes `scfPath`; every other tool reads the most
- * recently opened project out of the cache instead of taking `scfPath`
- * itself — there is exactly one film active at a time, and
- * `open`/`set_root` are how it changes.
+ * So a film is named by SESSION. `open` takes `scfPath` and gives back
+ * the film's session id (`sessionId.ts`); every other film tool takes
+ * that id, and `withProject` — which every one of them goes through —
+ * finds the film by it and by nothing else. An id that names no session
+ * here is `invalid_session` (`session.ts`): there is no falling back on
+ * a film somebody opened. A server keeps one session per film, so opening
+ * a film again gives the id it already has. (In the desktop app several
+ * clients' servers share one window, so sessions are the cache's and not
+ * module state.)
  *
  * The recent-files list and each project's asset root outlive the
- * session: both are `app.db` (file-management-plan.md §3.1), read and
+ * server: both are `app.db` (file-management-plan.md §3.1), read and
  * written directly through `platform.appStore` by the `open`,
  * `recent_files` and `set_root` tool handlers (mcpServer.ts) — this
- * cache holds no history of its own.
+ * cache holds no history of its own. Sessions do not outlive it: a new
+ * server starts with none, and the ids it gives are new ones.
  */
 
 import {
   loadRegistry, type FileLocator, type RegistryJson, type ScfContext,
 } from "@minimalhumans/scf-core";
-import type { HostClient } from "@minimalhumans/scf-host/client";
+import { HostClientError, type HostClient }
+  from "@minimalhumans/scf-host/client";
 import registryJson from "@minimalhumans/scf-core/registry.json" with { type: "json" };
 import type { RootMap } from "./config.ts";
 import type { McpPlatform } from "./platform.ts";
+import { InvalidSessionError } from "./session.ts";
+import { createSessionIds } from "./sessionId.ts";
 
 export const registry = loadRegistry(registryJson as unknown as RegistryJson);
 
-/** A film this session knows: where it is and its roots. No handle. */
+/** A film this server knows: where it is and its roots. No handle. */
 export interface Project {
   scfPath: string;
   locate: FileLocator;
@@ -76,45 +82,48 @@ export interface ProjectCache {
   agentName(): string;
   setAgentName(client: string | undefined): void;
   /**
-   * Make the film at `scfPath` this session's current film. Given
-   * `roots`, they merge into whatever this path already had — so calling
-   * `open` again to add a root doesn't require repeating the ones already
-   * set. Opens nothing: the first call that reads it does.
+   * Run `fn` against the film at `scfPath` and, once it has answered,
+   * give the film a session: the one it has, if this server has opened
+   * it before, else a new one. A film that cannot be opened gets none.
+   * Given `roots`, they merge into whatever this path already had — so
+   * calling `open` again to add a root doesn't require repeating the
+   * ones already set.
    */
-  openProject(scfPath: string, roots?: RootMap): Project;
+  openProject<T>(scfPath: string, roots: RootMap,
+                 fn: (project: OpenProject) => Promise<T>):
+    Promise<{ sessionId: string; result: T }>;
+  /** Paths `app.db` has seen opened, most recently first. */
+  recentFiles(): Promise<string[]>;
   /**
-   * The film this session has open — whatever `open` named most
-   * recently. Throws a clear, actionable error rather than guessing when
-   * nothing has been opened yet.
+   * Merge `roots` into a session's film without reopening it. Throws
+   * `InvalidSessionError` as `withProject` does.
    */
-  currentProject(): Project;
+  setRoots(sessionId: string, roots: RootMap): Promise<Project>;
   /**
-   * Merge `roots` into the currently open project without reopening it.
-   * Same "no film open" error as `currentProject` when nothing is open.
+   * Run `fn` against the film `sessionId` names, on a connection of its
+   * own that is closed however `fn` ends. Every film tool goes through
+   * here, so nothing outlives a call, and the session is checked before
+   * any of the tool's own work: an id that names no session here, or one
+   * whose file is gone, throws `InvalidSessionError`.
    */
-  setRoots(roots: RootMap): Project;
-  /**
-   * Run `fn` against the film, on a connection of its own that is closed
-   * however `fn` ends. The current film unless one is given. Every tool
-   * call goes through here, so nothing outlives a call.
-   */
-  withProject<T>(fn: (project: OpenProject) => Promise<T>,
-                 project?: Project): Promise<T>;
+  withProject<T>(sessionId: string,
+                 fn: (project: OpenProject) => Promise<T>): Promise<T>;
 }
 
 export function createProjectCache(
     platform: McpPlatform, options: { readOnly: boolean }): ProjectCache {
   const { readOnly } = options;
   let agentName = "mcp";
+  const ids = createSessionIds(platform.appStore, platform.machineId);
 
   /**
-   * Every film this session has opened, by resolved path, so that
-   * opening one again keeps the roots already set. Holds no handle, so
-   * there is no reason to bound it the way a cache of open files must
-   * be.
+   * Every session this server has given, and the session of each film by
+   * resolved path, so that opening one again keeps its id and the roots
+   * already set. Holds no handle, so there is no reason to bound it the
+   * way a cache of open files must be.
    */
-  const known = new Map<string, Project>();
-  let lastUsed: string | null = null;
+  const sessions = new Map<string, Project>();
+  const sessionOf = new Map<string, string>();
 
   /** Merge `roots` into `project` in place. No-op when `roots` is empty. */
   function applyRoots(project: Project, roots: RootMap): void {
@@ -126,6 +135,47 @@ export function createProjectCache(
     project.rootMapped = true;
   }
 
+  /** The refusal of `sessionId`, with what the caller can do instead. */
+  async function invalid(sessionId: string): Promise<InvalidSessionError> {
+    return new InvalidSessionError(
+      sessionId === "" ? null : sessionId,
+      [...sessions].map(([id, p]) => ({ file_id: id, path: p.scfPath })),
+      await cache.recentFiles().catch(() => []));
+  }
+
+  async function sessionProject(sessionId: string): Promise<Project> {
+    const project = sessions.get(sessionId);
+    if (project === undefined) throw await invalid(sessionId);
+    return project;
+  }
+
+  /**
+   * `fn` against `project`, on a connection that lasts as long as it
+   * does. `gone` is what to throw when the file is not there.
+   */
+  async function run<T>(
+      project: Project, fn: (project: OpenProject) => Promise<T>,
+      gone?: () => Promise<Error>): Promise<T> {
+    const host = await platform.connect(agentName);
+    try {
+      const opened = await host.open(project.scfPath, { readOnly })
+        .catch(async (e: unknown) => {
+          throw gone !== undefined && e instanceof HostClientError &&
+            e.code === "not_found" ? await gone() : e;
+        });
+      return await fn({
+        ...project, ctx: host.context(registry), host,
+        revision: opened.revision, readOnly,
+      });
+    } finally {
+      // Closed before the connection is: the host lets go of a dropped
+      // connection's film only after it notices, and until then
+      // Windows will not let anyone rename or delete the file.
+      await host.closeFilm().catch(() => {});
+      await host.dispose();
+    }
+  }
+
   const cache: ProjectCache = {
     readOnly,
     agentName: () => agentName,
@@ -134,48 +184,52 @@ export function createProjectCache(
         : `mcp: ${client}`;
     },
 
-    openProject(scfPathInput, roots = {}) {
+    async openProject(scfPathInput, roots, fn) {
       const scfPath = platform.resolve(scfPathInput);
-      let project = known.get(scfPath);
-      if (project === undefined) {
-        project = { scfPath, locate: platform.locator({}),
-                    rootMapped: false, roots: {} };
-        known.set(scfPath, project);
-      }
+      const known = sessionOf.get(scfPath);
+      const project = (known === undefined ? undefined : sessions.get(known))
+        ?? { scfPath, locate: platform.locator({}), rootMapped: false,
+             roots: {} };
       applyRoots(project, roots);
-      lastUsed = scfPath;
+      const result = await run(project, fn);
+      // Looked up again, twice: another call may have opened this film,
+      // or let its session go, while this one was reading it or waiting
+      // for an id.
+      let sessionId = sessionOf.get(scfPath);
+      if (sessionId === undefined) {
+        const minted = await ids.next();
+        sessionId = sessionOf.get(scfPath);
+        if (sessionId === undefined) {
+          sessionId = minted;
+          sessions.set(sessionId, project);
+          sessionOf.set(scfPath, sessionId);
+        }
+      }
+      const kept = sessions.get(sessionId);
+      if (kept !== undefined && kept !== project) applyRoots(kept, roots);
+      return { sessionId, result };
+    },
+
+    recentFiles: async () =>
+      (await platform.appStore.recentProjects()).map((r) => r.scfPath),
+
+    async setRoots(sessionId, roots) {
+      const project = await sessionProject(sessionId);
+      applyRoots(project, roots);
       return project;
     },
 
-    currentProject() {
-      const project = lastUsed === null ? undefined : known.get(lastUsed);
-      if (project !== undefined) return project;
-      throw new Error(
-        "no film open in this session — call `open` with a path to a " +
-        ".scf file first");
-    },
-
-    setRoots(roots) {
-      const project = cache.currentProject();
-      applyRoots(project, roots);
-      return project;
-    },
-
-    async withProject(fn, project = cache.currentProject()) {
-      const host = await platform.connect(agentName);
-      try {
-        const opened = await host.open(project.scfPath, { readOnly });
-        return await fn({
-          ...project, ctx: host.context(registry), host,
-          revision: opened.revision, readOnly,
-        });
-      } finally {
-        // Closed before the connection is: the host lets go of a dropped
-        // connection's film only after it notices, and until then
-        // Windows will not let anyone rename or delete the file.
-        await host.closeFilm().catch(() => {});
-        await host.dispose();
-      }
+    async withProject(sessionId, fn) {
+      const project = await sessionProject(sessionId);
+      return run(project, fn, () => {
+        // The film is gone, so its session is too: `open` is how the
+        // caller finds it again, wherever it went.
+        sessions.delete(sessionId);
+        if (sessionOf.get(project.scfPath) === sessionId) {
+          sessionOf.delete(project.scfPath);
+        }
+        return invalid(sessionId);
+      });
     },
   };
   return cache;

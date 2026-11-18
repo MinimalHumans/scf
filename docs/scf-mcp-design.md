@@ -374,9 +374,42 @@ rewriting it, until the client quit. Opening a database costs
 milliseconds. `scf-mcp/test/smoke.test.ts` opens a film through the
 server, queries it, then renames and deletes it while the server runs.
 
+### 5.1.1 A film is named by its session
+
+`open` returns a `file_id`, and every tool except `open` and
+`recent_files` takes one. A call is routed by it and by nothing else
+(`withProject`, which every film tool goes through, looks the session up
+before the tool does anything).
+
+The server used to answer from "the film opened most recently". That
+holds only while one conversation has the server to itself, and it does
+not: a client may run every conversation it has on one server process
+(Claude Desktop does), and stdio gives the server nothing to tell them
+apart by. Two conversations with a film each were then one `open` away
+from reading, and writing, each other's.
+
+- **An id is never given twice.** It is a count kept in `app.db`, put
+  through a permutation keyed by a salt and written in base 36, four
+  characters at first (`sessionId.ts`). The count outlives the server, so
+  an id left in an old conversation is unknown to a new server and
+  cannot have become another film's. The salt starts from the machine's
+  identifier; a salt that has given every id it has is replaced, and the
+  count starts again.
+- **One session per film per server.** Opening a film that is already
+  open returns the session it has, and the answer does not say which
+  case it was.
+- **One error.** A `file_id` that is missing, malformed, unknown, or
+  whose file is gone is `invalid_session` (`session.ts`): a tool error
+  whose text is JSON with `code`, `message`, `rejected_file_id`,
+  `open_sessions` (`file_id` and `path` of each) and `recent_files`.
+  The way on is always `open`.
+- **`--scf` opens a session at startup**, and the server's instructions
+  give its id, so a single-film setup still needs no `open` call.
+
 | Tool | | |
 |---|---|---|
 | `open`, `recent_files`, `set_root` | | which film, and where its assets are |
+| every tool below, and `set_root` | `file_id` | which film (§5.1.1) |
 | `find` | `(entityType, label)` | → `resolveNaturalKey` |
 | `list` | `(entityType, filter?)` | → `listEntities` |
 | `where_used` | `(entityType, uuid)` | → `whereUsed` |
