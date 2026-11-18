@@ -139,7 +139,7 @@ export function createProjectCache(
   async function invalid(sessionId: string): Promise<InvalidSessionError> {
     return new InvalidSessionError(
       sessionId === "" ? null : sessionId,
-      [...sessions].map(([id, p]) => ({ session_id: id, path: p.scfPath })),
+      [...sessions].map(([id, p]) => ({ file_id: id, path: p.scfPath })),
       await cache.recentFiles().catch(() => []));
   }
 

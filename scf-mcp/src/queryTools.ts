@@ -168,12 +168,12 @@ export function registerQueryTools(
       description: forSession(
         `${spec.title} (${spec.id}, spec ${spec.section}). ` +
         `${spec.summary}${note}`),
-      inputSchema: { session_id: SESSION_ID, ...spec.shape, format: FORMAT },
+      inputSchema: { file_id: SESSION_ID, ...spec.shape, format: FORMAT },
     }, async (args) => {
       try {
-        const { session_id, format, ...params } = args as QueryParams & {
-          session_id: string; format?: "json" | "markdown" };
-        const result = await cache.withProject(session_id, async (p) => {
+        const { file_id, format, ...params } = args as QueryParams & {
+          file_id: string; format?: "json" | "markdown" };
+        const result = await cache.withProject(file_id, async (p) => {
           const run = buildDispatch(p.locate, p.rootMapped)[spec.id];
           if (run === undefined) {
             throw new Error(`internal: no dispatch entry for "${spec.id}"`);

@@ -152,7 +152,7 @@ export async function openFilm(
     server: Server, scfPath: string): Promise<string> {
   const r = await callTool(server, "open", { scfPath });
   if (r.isError) throw new Error(`open ${scfPath}: ${r.text}`);
-  return (r.json as { session_id: string }).session_id;
+  return (r.json as { file_id: string }).file_id;
 }
 
 /**
@@ -168,7 +168,7 @@ export function inSession(server: Server, sessionId: string): Server {
       const named = method !== "tools/call" || call === undefined ||
         call.name === "open" || call.name === "recent_files";
       return server.send(method, named ? params : {
-        ...call, arguments: { session_id: sessionId, ...call.arguments },
+        ...call, arguments: { file_id: sessionId, ...call.arguments },
       });
     },
   };

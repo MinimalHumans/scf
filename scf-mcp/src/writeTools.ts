@@ -578,7 +578,7 @@ function register<A extends object>(
       "`confirm` set to that `planId`: it re-checks the film, and " +
       "applies the change only if the plan is unchanged."),
     inputSchema: {
-      session_id: SESSION_ID,
+      file_id: SESSION_ID,
       ...shape,
       confirm: z.string().optional().describe(
         "The `planId` of a plan the person has approved. Omit to plan."),
@@ -588,9 +588,9 @@ function register<A extends object>(
     },
   }, async (input) => {
     try {
-      const { session_id, confirm, verbose = false, ...args } = input as
-        { session_id: string; confirm?: string; verbose?: boolean } & A;
-      return ok(await cache.withProject(session_id, async (p) => {
+      const { file_id, confirm, verbose = false, ...args } = input as
+        { file_id: string; confirm?: string; verbose?: boolean } & A;
+      return ok(await cache.withProject(file_id, async (p) => {
         if (p.readOnly) throw new Error("this film was opened read-only");
         await requireCurrentSchema(p);
         const full = await makePlan(
@@ -1116,13 +1116,13 @@ export function registerJournalTool(
       "such as this one. Use it to see what changed since you last " +
       "looked, or to attribute a change you did not make."),
     inputSchema: {
-      session_id: SESSION_ID,
+      file_id: SESSION_ID,
       limit: z.number().int().min(1).max(200).optional().describe(
         "How many entries (default 50)."),
     },
-  }, async ({ session_id, limit }) => {
+  }, async ({ file_id, limit }) => {
     try {
-      return ok(await cache.withProject(session_id, async (p) => ({
+      return ok(await cache.withProject(file_id, async (p) => ({
         film: p.scfPath, revision: p.revision,
         changes: await p.host.journal(limit),
       })));

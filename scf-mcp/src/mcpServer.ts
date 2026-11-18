@@ -8,7 +8,7 @@
  *
  * Tools:
  *   open          open a film, with optional root mappings — returns
- *                 its `session_id` and a quick summary
+ *                 its `file_id` and a quick summary
  *   recent_files  paths this or an earlier server has opened, most recent
  *                 first — a hint for `open` with no full path in hand
  *   find          label -> uuid (resolveNaturalKey)
@@ -36,7 +36,7 @@
  * what.
  *
  * A film is named by session — see projectCache.ts. `open` is the only
- * tool that names a `.scf` path, and it returns the film's `session_id`;
+ * tool that names a `.scf` path, and it returns the film's `file_id`;
  * every other tool but `recent_files` takes one, reads that session's
  * film, and answers `invalid_session` (session.ts) when the id names
  * none. There is no "current" film to fall back on. `set_root` maps
@@ -171,7 +171,7 @@ export async function createScfMcpServer(
       (config.readOnly ? "Read-only access to" : "Access to") +
       " a film's Story Context Framework (`.scf`) file. " +
       "Call `open` with the path to a film's `.scf` file before anything " +
-      "else. It returns a `session_id`: pass it as `session_id` to every " +
+      "else. It returns a `file_id`: pass it as `file_id` to every " +
       "other tool that works on the film. There is no current film — " +
       "each call says which film it means, so several can be open at " +
       "once. A tool that answers with an `invalid_session` error has no " +
@@ -182,7 +182,7 @@ export async function createScfMcpServer(
       "identifiers, map them to real directories with `open`'s `roots` " +
       "or, once it is open, `set_root`." +
       (startup === null ? "" :
-        ` \`${startup.scfPath}\` is already open: its \`session_id\` is ` +
+        ` \`${startup.scfPath}\` is already open: its \`file_id\` is ` +
         `\`${startup.sessionId}\`.`) +
       "\n\nOnce a film is open:\n" +
       "- `find` resolves a natural-key label (scene/shot number, name) to " +
@@ -253,8 +253,8 @@ export async function createScfMcpServer(
 
   server.registerTool("open", {
     description: "Open a film, optionally mapping asset roots, and get " +
-      "its `session_id`. This is the only tool that takes a file path: " +
-      "every other tool that works on a film takes the `session_id` this " +
+      "its `file_id`. This is the only tool that takes a file path: " +
+      "every other tool that works on a film takes the `file_id` this " +
       "returns, so call it before anything else and again whenever a " +
       "tool answers `invalid_session`. Calling it again for a film " +
       "already open returns the same session and adds any new roots " +
@@ -289,7 +289,7 @@ export async function createScfMcpServer(
             writable: !readOnly,
           };
         });
-      return ok({ session_id: sessionId, ...result });
+      return ok({ file_id: sessionId, ...result });
     } catch (e) {
       return err(e);
     }
@@ -311,16 +311,16 @@ export async function createScfMcpServer(
       "directories on this machine, for one open film. Repeatable, to " +
       "add more roots or change existing ones without reopening the file."),
     inputSchema: {
-      session_id: SESSION_ID,
+      file_id: SESSION_ID,
       roots: z.record(z.string(), z.string()).describe(
         "Root name -> absolute directory, e.g. { \"project\": " +
         "\"/path/to/project\" }. Matches the `@root/...` prefix asset " +
         "identifiers use inside the file. Merges into whatever roots " +
         "are already set."),
     },
-  }, async ({ session_id, roots }) => {
+  }, async ({ file_id, roots }) => {
     try {
-      const project = await cache.setRoots(session_id, roots);
+      const project = await cache.setRoots(file_id, roots);
       const explicitRoot = roots[PROJECT_ROOT];
       if (explicitRoot !== undefined) {
         platform.appStore
@@ -343,15 +343,15 @@ export async function createScfMcpServer(
       "an array; more than one hit means the label is ambiguous in this " +
       "film, not that the tool failed."),
     inputSchema: {
-      session_id: SESSION_ID,
+      file_id: SESSION_ID,
       entityType: z.string().describe(
         "Registry entity name, e.g. \"scene\", \"shot\", \"character\"."),
       label: z.string().describe(
         "The label as written, e.g. \"10A\", \"12-04\", \"Eleanor\"."),
     },
-  }, async ({ session_id, entityType, label }) => {
+  }, async ({ file_id, entityType, label }) => {
     try {
-      return ok(await cache.withProject(session_id, ({ ctx }) =>
+      return ok(await cache.withProject(file_id, ({ ctx }) =>
         resolveNaturalKey(ctx, entityType, label)));
     } catch (e) {
       return err(e);
@@ -366,7 +366,7 @@ export async function createScfMcpServer(
       "are there\" — rather than guessing labels through find one at a " +
       "time."),
     inputSchema: {
-      session_id: SESSION_ID,
+      file_id: SESSION_ID,
       entityType: z.string().describe(
         "Registry entity name, e.g. \"scene\", \"shot\", \"character\"."),
       filter: z.object({
@@ -380,9 +380,9 @@ export async function createScfMcpServer(
         "uuid: \"<scene uuid>\" } for every shot in one scene. Omit to " +
         "list every row of entityType."),
     },
-  }, async ({ session_id, entityType, filter }) => {
+  }, async ({ file_id, entityType, filter }) => {
     try {
-      return ok(await cache.withProject(session_id, ({ ctx }) =>
+      return ok(await cache.withProject(file_id, ({ ctx }) =>
         listEntities(ctx, entityType, filter)));
     } catch (e) {
       return err(e);
@@ -398,17 +398,17 @@ export async function createScfMcpServer(
       "references is not necessarily wrong, but it resolves for no " +
       "query, and this is the only way to see that."),
     inputSchema: {
-      session_id: SESSION_ID,
+      file_id: SESSION_ID,
       entityType: z.string().describe(
         "Registry entity name of the row asked about, e.g. \"asset\", " +
         "\"bundle\", \"prop\"."),
       uuid: z.string().describe("That row's uuid, e.g. from find() or list()."),
     },
-  }, async ({ session_id, entityType, uuid }) => {
+  }, async ({ file_id, entityType, uuid }) => {
     try {
       return ok({
         entityType, uuid,
-        usedBy: await cache.withProject(session_id, ({ ctx }) =>
+        usedBy: await cache.withProject(file_id, ({ ctx }) =>
           whereUsed(ctx, entityType, uuid)),
       });
     } catch (e) {
@@ -436,10 +436,10 @@ export async function createScfMcpServer(
       "thin. The scene's full package is `scene_package` (with " +
       "`shot.fields.scene_uuid`); the project is `brief`. " +
       "`contextFormat` is 3.0 on all three shot calls."),
-    inputSchema: { session_id: SESSION_ID, shotUuid: SHOT_UUID },
-  }, async ({ session_id, shotUuid }) => {
+    inputSchema: { file_id: SESSION_ID, shotUuid: SHOT_UUID },
+  }, async ({ file_id, shotUuid }) => {
     try {
-      return ok(await cache.withProject(session_id, ({ ctx }) =>
+      return ok(await cache.withProject(file_id, ({ ctx }) =>
         shotContext(ctx, shotUuid)));
     } catch (e) {
       return err(e);
@@ -461,14 +461,14 @@ export async function createScfMcpServer(
       "`subjectUuid` (from `shot_context`'s `presence`, or the scene's " +
       "location) to take them one at a time."),
     inputSchema: {
-      session_id: SESSION_ID,
+      file_id: SESSION_ID,
       shotUuid: SHOT_UUID,
       subjectUuid: z.string().optional().describe(
         "Optional: only this subject, which must be at the shot."),
     },
-  }, async ({ session_id, shotUuid, subjectUuid }) => {
+  }, async ({ file_id, shotUuid, subjectUuid }) => {
     try {
-      return ok(await cache.withProject(session_id, (p) => shotMedia(
+      return ok(await cache.withProject(file_id, (p) => shotMedia(
         p.ctx, shotUuid, p.locate, p.rootMapped, subjectUuid ?? null)));
     } catch (e) {
       return err(e);
@@ -484,10 +484,10 @@ export async function createScfMcpServer(
       "direction (Q06), and voice (Q05) for each who speaks in the shot's " +
       "lines, including a voice from outside the frame. Rubrics overlap, " +
       "and a finding two of them raise appears under both targets."),
-    inputSchema: { session_id: SESSION_ID, shotUuid: SHOT_UUID },
-  }, async ({ session_id, shotUuid }) => {
+    inputSchema: { file_id: SESSION_ID, shotUuid: SHOT_UUID },
+  }, async ({ file_id, shotUuid }) => {
     try {
-      return ok(await cache.withProject(session_id, ({ ctx }) =>
+      return ok(await cache.withProject(file_id, ({ ctx }) =>
         shotReadiness(ctx, shotUuid)));
     } catch (e) {
       return err(e);
@@ -516,7 +516,7 @@ export async function createScfMcpServer(
       "  Q08 (Soundscape)         — scene\n" +
       "  Q13 (Media resolution)   — subjectType, subject, intent, scene?, shot?"),
     inputSchema: {
-      session_id: SESSION_ID,
+      file_id: SESSION_ID,
       queryId: z.enum(READINESS_TARGETS).describe(
         "The target query to assess — only these six have a readiness " +
         "rubric (docs/scf-mcp-design.md §4.2); the other ten are " +
@@ -527,10 +527,10 @@ export async function createScfMcpServer(
           "for which ones queryId needs."),
       format: FORMAT,
     },
-  }, async ({ session_id, queryId, params, format }) => {
+  }, async ({ file_id, queryId, params, format }) => {
     try {
       const merged: QueryParams = { ...(params ?? {}), target: queryId };
-      const result = await cache.withProject(session_id, async (p) => {
+      const result = await cache.withProject(file_id, async (p) => {
         const q14 = buildDispatch(p.locate, p.rootMapped)["Q14"];
         if (q14 === undefined) throw new Error("internal: Q14 dispatch missing");
         return q14(p.ctx, merged);

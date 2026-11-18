@@ -65,14 +65,14 @@ export function registerReadTools(
       "Cut shots are left out unless asked for. Pass `sceneUuid` for " +
       "one scene."),
     inputSchema: {
-      session_id: SESSION_ID,
+      file_id: SESSION_ID,
       sceneUuid: z.string().optional().describe("Only this scene."),
       includeCut: z.boolean().optional().describe(
         "Also list shots that have been cut from the film."),
     },
-  }, async ({ session_id, sceneUuid, includeCut }) => {
+  }, async ({ file_id, sceneUuid, includeCut }) => {
     try {
-      return ok(await cache.withProject(session_id, async ({ ctx }) => {
+      return ok(await cache.withProject(file_id, async ({ ctx }) => {
         const rows = await readShotlistRows(ctx.exec);
         let scope = "all";
         if (sceneUuid !== undefined) {
@@ -112,7 +112,7 @@ export function registerReadTools(
       "references matter most\" and \"what is not used by anything\". " +
       "Lists files, never their bytes."),
     inputSchema: {
-      session_id: SESSION_ID,
+      file_id: SESSION_ID,
       sort: z.enum(["importance", "alphabetical", "newest"]).optional()
         .describe("Default importance."),
       filter: z.enum(["all", "character", "location", "prop", "shot",
@@ -122,9 +122,9 @@ export function registerReadTools(
       limit: z.number().int().min(1).max(500).optional().describe(
         "How many (default 50)."),
     },
-  }, async ({ session_id, sort, filter, includeHistory, limit }) => {
+  }, async ({ file_id, sort, filter, includeHistory, limit }) => {
     try {
-      return ok(await cache.withProject(session_id, async ({ ctx }) => {
+      return ok(await cache.withProject(file_id, async ({ ctx }) => {
         const all = await loadGallery(ctx.exec, includeHistory === true);
         const kept = sortItems(
           filterItems(all, (filter ?? "all") as GalleryFilter, false),
@@ -153,12 +153,12 @@ export function registerReadTools(
       "rather than an error) or `unlinked` (speaks in a scene they are " +
       "not linked to). Scenes in story order."),
     inputSchema: {
-      session_id: SESSION_ID,
+      file_id: SESSION_ID,
       characterUuid: z.string().describe("The character's uuid."),
     },
-  }, async ({ session_id, characterUuid }) => {
+  }, async ({ file_id, characterUuid }) => {
     try {
-      return ok(await cache.withProject(session_id, async ({ ctx }) => {
+      return ok(await cache.withProject(file_id, async ({ ctx }) => {
         const who = (await rowsIncludingCut(
           ctx.exec, "character", "uuid = ?", [characterUuid]))[0];
         if (who === undefined) {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
  * session.ts — what every tool that works on a film says about sessions:
- * the `session_id` it takes, and the one error it gives when that id is
+ * the `file_id` it takes, and the one error it gives when that id is
  * no use.
  *
  * `open` gives a film a session id. Every other film tool is told which
@@ -13,22 +13,25 @@
 import { z } from "zod";
 
 /**
- * A film tool's `session_id` argument. Advertised as a required string;
+ * A film tool's `file_id` argument. Advertised as a required string;
  * anything else, or nothing, arrives as "" so that it is refused as
  * `invalid_session` like any other id that names no session, not as a
  * schema error with no way forward in it.
+ *
+ * Not called `session_id`: Claude Desktop removes an argument of that
+ * name from a tool call before sending it.
  */
 export const SESSION_ID = z.preprocess(
   (v) => (typeof v === "string" ? v : ""), z.string()).describe(
-  "The `session_id` that `open` returned for the film.");
+  "The `file_id` that `open` returned for the film.");
 
 /** A film tool's description, with what it needs from `open`. */
 export const forSession = (description: string): string =>
-  `${description}\n\nTakes the \`session_id\` that \`open\` returned for ` +
+  `${description}\n\nTakes the \`file_id\` that \`open\` returned for ` +
   "the film. An `invalid_session` error means call `open` again.";
 
 export interface OpenSession {
-  session_id: string;
+  file_id: string;
   path: string;
 }
 
@@ -37,7 +40,7 @@ export interface InvalidSession {
   code: "invalid_session";
   message: string;
   /** The id as given, or null when none (or nothing like one) was. */
-  rejected_session_id: string | null;
+  rejected_file_id: string | null;
   /** The sessions this server does have. */
   open_sessions: OpenSession[];
   /** Paths as `recent_files` lists them, most recently opened first. */
@@ -60,7 +63,7 @@ export class InvalidSessionError extends Error {
     this.name = "InvalidSessionError";
     this.payload = {
       code: "invalid_session", message: this.message,
-      rejected_session_id: rejected, open_sessions: openSessions,
+      rejected_file_id: rejected, open_sessions: openSessions,
       recent_files: recentFiles,
     };
   }

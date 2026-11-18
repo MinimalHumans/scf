@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "mcp-probe"
+version = "0.1.0"
+description = "A throwaway MCP server on stdio that records how an agent launches and calls it"
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+# Not part of any other Cargo workspace.
+[workspace]

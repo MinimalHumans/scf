@@ -376,7 +376,7 @@ server, queries it, then renames and deletes it while the server runs.
 
 ### 5.1.1 A film is named by its session
 
-`open` returns a `session_id`, and every tool except `open` and
+`open` returns a `file_id`, and every tool except `open` and
 `recent_files` takes one. A call is routed by it and by nothing else
 (`withProject`, which every film tool goes through, looks the session up
 before the tool does anything).
@@ -398,10 +398,10 @@ from reading, and writing, each other's.
 - **One session per film per server.** Opening a film that is already
   open returns the session it has, and the answer does not say which
   case it was.
-- **One error.** A `session_id` that is missing, malformed, unknown, or
+- **One error.** A `file_id` that is missing, malformed, unknown, or
   whose file is gone is `invalid_session` (`session.ts`): a tool error
-  whose text is JSON with `code`, `message`, `rejected_session_id`,
-  `open_sessions` (`session_id` and `path` of each) and `recent_files`.
+  whose text is JSON with `code`, `message`, `rejected_file_id`,
+  `open_sessions` (`file_id` and `path` of each) and `recent_files`.
   The way on is always `open`.
 - **`--scf` opens a session at startup**, and the server's instructions
   give its id, so a single-film setup still needs no `open` call.
@@ -409,7 +409,7 @@ from reading, and writing, each other's.
 | Tool | | |
 |---|---|---|
 | `open`, `recent_files`, `set_root` | | which film, and where its assets are |
-| every tool below, and `set_root` | `session_id` | which film (§5.1.1) |
+| every tool below, and `set_root` | `file_id` | which film (§5.1.1) |
 | `find` | `(entityType, label)` | → `resolveNaturalKey` |
 | `list` | `(entityType, filter?)` | → `listEntities` |
 | `where_used` | `(entityType, uuid)` | → `whereUsed` |
