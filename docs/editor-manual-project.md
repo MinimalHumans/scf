@@ -211,6 +211,7 @@ The **☰** button at the top left opens the menu.
 | **Close project** | | Closes the current file |
 | **Settings** | Ctrl+, | See below |
 | **Event log** | | Opens the log of every change (see [Tools](editor-tools.html#event-log)) |
+| **Media dashboard** | | Opens the preview queue and cache (see [Tools](editor-tools.html#media)) |
 | **Help for this tab** | F1 | Opens this manual at the page for the tab you're on |
 | **About SCF Editor** | | Version, schema version and build |
 | **Open Source Licenses** | | |
@@ -256,6 +257,12 @@ locations, props, scenes, shots, costumes, assets and the rest.
   file itself is never touched.
 - **Event log**: open it, or clear it. Clearing can't be undone, so
   export a copy first if you want one.
+
+**Media**
+
+- Worker threads, the default proxy resolution and the global cache
+  limit for previews, plus the optional **media helpers** (ffmpeg and
+  others) the editor can use. See [Media](editor-tools.html#media).
 
 ## Tips
 

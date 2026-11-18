@@ -74,7 +74,8 @@ describe("F1 help", () => {
       ...MODES.map((navMode) => helpUrl(view({ navMode }))),
       ...CHARACTER_TABS.map((characterTab) =>
         helpUrl(view({ navMode: "characters", characterTab }))),
-      helpUrl(view({ tool: "events" })),
+      ...(["events", "media", "settings"] as const).map((tool) =>
+        helpUrl(view({ tool }))),
     ];
     for (const url of urls) {
       const [page, anchor] = url.slice(MANUAL_BASE.length).split("#");

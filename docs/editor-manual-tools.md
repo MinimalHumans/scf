@@ -13,7 +13,8 @@ or manage media files.
 | **Schema** | Browse and edit every record of every type |
 | **Assets** | Import, find, check and organise the media files |
 
-The **Event log** lives in the app menu and is covered at the end.
+The **Event log** and the **Media** dashboard live in the app menu and are
+covered at the end.
 
 ## Subjects
 
@@ -172,6 +173,56 @@ you'll rarely need this by hand.
 duplicate bindings, files of the wrong kind for their bundle, and one
 value spelled several ways. Two of its buttons (**use "…"** and **make
 it a list**) fix the data straight away, with no confirmation.
+
+## Media
+
+**☰ › Media dashboard** opens a live view of the media server, the
+background worker that makes previews of your video and stills. It
+updates every two seconds while the tab is open, and works with no
+project open.
+
+- **Queue** shows each conversion that's waiting or running: the file,
+  which tool is doing it, how long it's been going and a progress bar.
+  The **Video** and **Stills** counts show how many worker slots are in
+  use. **▲** and **▼** raise or lower a job's priority (background,
+  requested, preview). **Cancel** drops it.
+- **Failures** lists conversions that didn't finish, with the error.
+  **Show details** reveals the tool's own output, which is usually
+  what you need to see why. **Retry** queues the job again.
+- **Cache** shows how much disk the converted previews use, for video
+  and stills, against this project's limit, plus the total across every
+  project. **Project limit override (MB)** sets a cap for this project.
+  It can only tighten the global limit, and leaving it blank uses the
+  global one.
+- **Flush this project…** and **Flush System Cache…** delete converted
+  previews. Nothing is lost: they're made again the next time they're
+  needed.
+
+### Media helpers
+
+Previews of some formats need optional tools installed on your computer.
+They're listed under **☰ › Settings › Media › Media helpers**:
+
+| Tool | Unlocks |
+|---|---|
+| **ffmpeg** | Video and audio transcoding, and stills |
+| **ffprobe** | Video and audio probing (comes with ffmpeg) |
+| **magick** (ImageMagick) | TIFF, PSD and HEIC stills |
+| **oiiotool** (OpenImageIO) | EXR and DPX stills, and colour transforms |
+
+None of them is required. Without one, files of that kind still import
+and play where the app can, but preview with less detail.
+
+- Each row shows whether the tool was found and its version. The link
+  icon opens its download page.
+- **Re-detect** looks again, after you install one.
+- If a tool is somewhere unusual, use the folder icon to pick its
+  executable. The path shown beside a found tool opens its folder.
+
+Settings › Media also has the global settings: **Worker threads** (how
+many conversions run at once, per kind; takes effect next time the app
+starts), the **Default proxy resolution** for video previews, and the
+**Global cache limit** in GB.
 
 ## Event log
 
