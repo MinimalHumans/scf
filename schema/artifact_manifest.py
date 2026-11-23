@@ -44,7 +44,7 @@ from schema_meta import SCHEMA_VERSION  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "spec" / "ARTIFACTS.md"
-REPO = "https://raw.githubusercontent.com/MinimalHumans/SCF_studio"
+REPO = "https://raw.githubusercontent.com/MinimalHumans/scf"
 
 
 def spec_version() -> str:

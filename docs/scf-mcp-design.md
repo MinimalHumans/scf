@@ -389,6 +389,7 @@ server, queries it, then renames and deletes it while the server runs.
 | `gallery` | `(sort?, filter?, includeHistory?, limit?)` | → `loadGallery`, assets ranked by what they carry |
 | `character_presence` | `(characterUuid)` | → `readScriptPresence` + `presenceByScene`, links vs cues |
 | `recent_changes` | `(limit?)` | the host's journal: who changed what |
+| `editor_help` | `(topic?, section?)` | how to use the editor, from its manual (`docs/editor-*.md`, bundled by `editorManual.ts`); needs no film |
 | `create_row`, `update_row`, `delete_row`, `add_shot`, `set_shot_cut`, `move_shot`, `set_title_page_key` | each tool's own, and `confirm?` | writes, plan first (`writeTools.ts`; omitted by `--read-only`) |
 
 The last three read rows are the editor's own: the shot list, gallery and

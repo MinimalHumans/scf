@@ -16,8 +16,9 @@ import { EditorView } from "@codemirror/view";
 import { EditorState, Transaction } from "@codemirror/state";
 import { exec, registry, useStore } from "../state/store.ts";
 import {
-  readScreenplay, type TitlePageRow,
+  readScreenplay, type ScreenplayRow, type TitlePageRow,
 } from "@scf-core/screenplay/rowModel.ts";
+import type { CommittedLine } from "@scf-core/ops/calls.ts";
 import { lineState, loadLines, mintLineId } from "../editor/lineState.ts";
 import { planSceneMove, sceneBlocks } from "@scf-core/screenplay/sceneMove.ts";
 
@@ -259,6 +260,31 @@ export function ScriptView(): JSX.Element {
    * A queue instead of a flag. Redundant passes are cheap; overlapping
    * ones corrupt.
    */
+  /**
+   * The baseline after a commit, from what the host says it stored.
+   *
+   * Not from `plan.rows`: the host links a copy of those rows, so the
+   * scene, character and location ids it assigned (and any cue a rename
+   * rewrote) exist only in its reply. Taking the baseline from the
+   * window's own rows left every new heading at sceneId null, and the
+   * next commit created its scene a second time.
+   */
+  const baselineFrom = (rows: ScreenplayRow[],
+                        lines: CommittedLine[]): Map<string, Block> => {
+    const stored = new Map(lines.map((l) => [l.uuid, l]));
+    return new Map(rows.map((r) => {
+      const l = stored.get(r.uuid!);
+      return [r.uuid!, {
+        id: r.uuid!, type: r.lineType as Block["type"],
+        text: l?.content ?? r.content,
+        sceneId: l?.sceneId ?? r.sceneId,
+        characterId: l?.characterId ?? r.characterId,
+        locationId: l?.locationId ?? r.locationId,
+        metadata: l?.metadata ?? r.metadata,
+      }];
+    }));
+  };
+
   const serialize = <T,>(work: () => Promise<T>): Promise<T> => {
     const run = commitQueue.current.then(work, work);
     commitQueue.current = run.then(() => undefined, () => undefined);
@@ -303,11 +329,7 @@ export function ScriptView(): JSX.Element {
     }
     setCommitNote(parts.length > 0
       ? `created ${parts.join(", ")}` : "");
-    prevBlocksRef.current = new Map(plan.rows.map((r) => [r.uuid!, {
-      id: r.uuid!, type: r.lineType as Block["type"], text: r.content,
-      sceneId: r.sceneId, characterId: r.characterId,
-      locationId: r.locationId, metadata: r.metadata,
-    }]));
+    prevBlocksRef.current = baselineFrom(plan.rows, created.lines);
     const events = pendingEvents.current;
     pendingEvents.current = [];
     if (events.length > 0) {
@@ -383,12 +405,7 @@ export function ScriptView(): JSX.Element {
           rows: plan.rows, titlePage: titlePageRef.current,
           link: { createNew: true },
         });
-        prevBlocksRef.current = new Map(plan.rows.map((r) => [r.uuid!, {
-          id: r.uuid!, type: r.lineType as Block["type"],
-          text: r.content, sceneId: r.sceneId,
-          characterId: r.characterId, locationId: r.locationId,
-          metadata: r.metadata,
-        }]));
+        prevBlocksRef.current = baselineFrom(plan.rows, created.lines);
         setCommitNote(created.scenesCreated > 0
           ? `created ${String(created.scenesCreated)} scene(s)` : "");
         await refreshAnnotations();
@@ -422,21 +439,18 @@ export function ScriptView(): JSX.Element {
       link: { createNew: true, unlinkUuids: [...unlinkUuids],
               renames: [...renames] },
     });
-    prevBlocksRef.current = new Map(plan.rows.map((r) => [r.uuid!, {
-      id: r.uuid!, type: r.lineType as Block["type"], text: r.content,
-      sceneId: r.sceneId, characterId: r.characterId,
-      locationId: r.locationId, metadata: r.metadata,
-    }]));
-    // Renames may have rewritten cue lines — reflect them in the doc.
-    const current = commitPlan(view.state, prevBlocksRef.current);
-    for (const r of plan.rows) {
-      const live = current.rows.find((x) => x.uuid === r.uuid);
-      if (live !== undefined && live.content !== r.content) {
-        const lineIdx = plan.rows.indexOf(r);
-        const line = view.state.doc.line(
-          Math.min(lineIdx + 1, view.state.doc.lines));
+    prevBlocksRef.current = baselineFrom(plan.rows, created.lines);
+    // A rename rewrites the renamed character's cue lines on the host;
+    // bring the document into line with what was stored. In-line
+    // replacements, so every line keeps its identity.
+    const ids = lineEntries(view.state).map((e) => e.id);
+    for (const stored of created.lines) {
+      const n = ids.indexOf(stored.uuid) + 1;
+      if (n < 1) continue;
+      const line = view.state.doc.line(n);
+      if (line.text !== stored.content) {
         view.dispatch({ changes: { from: line.from, to: line.to,
-                                   insert: r.content } });
+                                   insert: stored.content } });
       }
     }
     const parts: string[] = [];

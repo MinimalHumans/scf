@@ -36,7 +36,8 @@ describe("scf-mcp server — a default project set at startup", () => {
       { tools: Array<{ name: string }> };
     expect(result.tools.map((t) => t.name).sort()).toEqual([
       ...QUERY_TOOL_NAMES,
-      "add_shot", "character_presence", "create_row", "delete_row", "find",
+      "add_shot", "character_presence", "create_row", "delete_row",
+      "editor_help", "find",
       "gallery", "list", "move_shot", "open", "readiness", "recent_changes",
       "recent_files", "set_root", "shot_list",
       "set_shot_cut", "set_title_page_key", "shot_context", "shot_media",

@@ -110,6 +110,48 @@ describe("the window's call table", () => {
     expect(stored.map((s) => s["content"])).toEqual(["INT. KITCHEN - DAY"]);
   });
 
+  test("script.commit reports the links it made, so a second commit " +
+       "of the same lines creates nothing", async () => {
+    // The window's rows cross to the host as a copy: whatever linking
+    // writes onto them only reaches the caller through the result.
+    const heading = "33333333-3333-4333-8333-333333333333";
+    const cue = "44444444-4444-4444-8444-444444444444";
+    const rows = [{
+      uuid: heading, lineOrder: 0, lineType: "heading",
+      content: "INT. BARN - NIGHT", raw: "",
+      sceneId: null, characterId: null, locationId: null, metadata: null,
+    }, {
+      uuid: cue, lineOrder: 1, lineType: "character", content: "MARCUS",
+      raw: "",
+      sceneId: null, characterId: null, locationId: null, metadata: null,
+    }];
+    const first = (await callFn(session, "script.commit", [{
+      rows: structuredClone(rows), titlePage: [],
+      link: { createNew: true },
+    }])).result as {
+      scenesCreated: number;
+      lines: Array<{ uuid: string; sceneId: number | null;
+                     characterId: number | null }>;
+    };
+    expect(first.scenesCreated).toBe(1);
+    const byUuid = new Map(first.lines.map((l) => [l.uuid, l]));
+    expect(byUuid.get(heading)?.sceneId).not.toBeNull();
+    expect(byUuid.get(cue)?.characterId).not.toBeNull();
+
+    // What the editor sends next time: its rows with the reported links.
+    const again = rows.map((r) => ({
+      ...r,
+      sceneId: byUuid.get(r.uuid)?.sceneId ?? null,
+      characterId: byUuid.get(r.uuid)?.characterId ?? null,
+    }));
+    const second = (await callFn(session, "script.commit", [{
+      rows: again, titlePage: [], link: { createNew: true },
+    }])).result as { scenesCreated: number; charactersCreated: number };
+    expect(second.scenesCreated).toBe(0);
+    expect(second.charactersCreated).toBe(0);
+    expect(await session.exec("SELECT id FROM scene")).toHaveLength(1);
+  });
+
   test("a failed script.commit leaves nothing half-written", async () => {
     const bad = [{
       uuid: "22222222-2222-4222-8222-222222222222", lineOrder: 0,
