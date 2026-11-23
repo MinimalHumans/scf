@@ -36,6 +36,7 @@ import { marked } from "marked";
 import {
   cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +44,15 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
 const CHECK = process.argv.includes("--check");
+
+/**
+ * A short hash of the stylesheet, added to its URL so a browser fetches
+ * the new one after a deploy instead of reusing a cached copy that does
+ * not match the new pages.
+ */
+const CSS_VERSION = createHash("sha256")
+  .update(readFileSync(join(HERE, "style.css")))
+  .digest("hex").slice(0, 10);
 const OUT = CHECK ? mkdtempSync(join(tmpdir(), "scf-site-")) : join(HERE, "dist");
 
 /**
@@ -59,29 +69,29 @@ const PAGES = [
   { group: "The editor", title: "Quickstart",
     slug: "editor-quickstart", source: "docs/editor-quickstart.md",
     blurb: "Get going with the SCF Editor, tab by tab" },
-  { group: "The editor", title: "Manual: Project",
+  { group: "The editor", title: "Project",
     slug: "editor-project", source: "docs/editor-manual-project.md",
     blurb: "The Project tab, saving, file tabs, the menu and settings" },
-  { group: "The editor", title: "Manual: Script",
+  { group: "The editor", title: "Script",
     slug: "editor-script", source: "docs/editor-manual-script.md",
     blurb: "Writing, formatting and committing in the Script tab" },
-  { group: "The editor", title: "Manual: Structure",
+  { group: "The editor", title: "Structure",
     slug: "editor-structure", source: "docs/editor-manual-structure.md",
     blurb: "Acts and sequences, and where each one starts" },
-  { group: "The editor", title: "Manual: Shoot",
+  { group: "The editor", title: "Shoot",
     slug: "editor-shoot", source: "docs/editor-manual-shoot.md",
     blurb: "Beats, shots, storyboards and frames" },
-  { group: "The editor", title: "Manual: Characters",
+  { group: "The editor", title: "Characters",
     slug: "editor-characters", source: "docs/editor-manual-characters.md",
     blurb: "The character workspace, As of, boards and story strips" },
-  { group: "The editor", title: "Manual: Locations & props",
+  { group: "The editor", title: "Locations & props",
     slug: "editor-locations-props",
     source: "docs/editor-manual-locations-props.md",
     blurb: "Variants, sound, prop states and script tags" },
-  { group: "The editor", title: "Manual: Tools",
+  { group: "The editor", title: "Tools",
     slug: "editor-tools", source: "docs/editor-manual-tools.md",
     blurb: "Subjects, Queries, Schema, Assets and the event log" },
-  { group: "The editor", title: "Manual: Presentation",
+  { group: "The editor", title: "Presentation",
     slug: "editor-presentation", source: "docs/editor-manual-presentation.md",
     blurb: "Screenplay, storyboard, shot list and gallery, printed and shown" },
 
@@ -366,7 +376,7 @@ for (const { page, text, headings } of docs) {
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
 <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=${CSS_VERSION}">
 </head>
 <body>
 <a class="skip" href="#content">Skip to content</a>
