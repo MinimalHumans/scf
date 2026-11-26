@@ -287,6 +287,14 @@ marked.use({
              `<a class="anchor" href="#${id}" aria-label="link">#</a>` +
              `</h${depth}>\n`;
     },
+    // An image is a link to itself. A screenshot of a whole window is
+    // unreadable at the width of a phone, and opened on its own it can
+    // be zoomed and panned with the browser's own gestures.
+    image({ href, title, text }) {
+      const titleAttr = title ? ` title="${esc(title)}"` : "";
+      return `<a class="zoom" href="${esc(href)}">` +
+             `<img src="${esc(href)}" alt="${esc(text)}"${titleAttr}></a>`;
+    },
   },
 });
 
@@ -301,7 +309,8 @@ function nav(currentSlug) {
     const items = g.pages.map((p) =>
       `<li${p.slug === currentSlug ? ' class="here"' : ""}>` +
       `<a href="${p.slug}.html">${esc(p.title)}</a></li>`).join("");
-    return (g.name ? `<h2>${esc(g.name)}</h2>` : "") + `<ul>${items}</ul>`;
+    return `<div class="group">` +
+      (g.name ? `<h2>${esc(g.name)}</h2>` : "") + `<ul>${items}</ul></div>`;
   }).join("");
 }
 
@@ -360,6 +369,37 @@ const TOC_SCRIPT = `<script>
 })();
 </script>`;
 
+/**
+ * The site navigation on a narrow screen: a bar with a Menu button, and
+ * the navigation opening beneath it. style.css folds it away only under
+ * the `js` class the page sets on <html>, so without script it is
+ * simply open, as the contents list is.
+ */
+const NAV_SCRIPT = `<script>
+(() => {
+  const side = document.querySelector(".side");
+  const button = side.querySelector(".menu-btn");
+  const set = (open) => {
+    side.classList.toggle("open", open);
+    button.setAttribute("aria-expanded", String(open));
+  };
+  button.addEventListener("click", () => {
+    set(!side.classList.contains("open"));
+  });
+  // Close on a tap outside it, and once a page is chosen.
+  document.addEventListener("click", (e) => {
+    if (e.target.closest(".menu-btn") !== null) return;
+    if (e.target.closest(".side-body") === null ||
+        e.target.closest("a") !== null) set(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !side.classList.contains("open")) return;
+    set(false);
+    button.focus();
+  });
+})();
+</script>`;
+
 const built = [];
 for (const { page, text, headings } of docs) {
   const body = linkSections(marked.parse(text), page.slug,
@@ -376,6 +416,7 @@ for (const { page, text, headings } of docs) {
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
 <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<script>document.documentElement.classList.add("js");</script>
 <link rel="stylesheet" href="style.css?v=${CSS_VERSION}">
 </head>
 <body>
@@ -385,12 +426,19 @@ for (const { page, text, headings } of docs) {
 <a class="brand" href="index.html">
 <img src="assets/scf-full-white.svg" alt="SCF — Story Context Framework" width="200" height="59">
 </a>
+<button class="menu-btn" type="button" aria-expanded="false" aria-controls="site-nav">
+<span class="menu-icon" aria-hidden="true"></span>Menu
+</button>
+<div class="side-body" id="site-nav">
+<nav aria-label="Site">
 ${nav(page.slug)}
+</nav>
 <p class="repo"><a href="https://github.com/MinimalHumans/scf">Repository on GitHub</a></p>
 <a class="maker" href="https://www.minimalhumans.com" target="_blank" rel="noopener">
 <span>Developed by</span>
 <img src="assets/mh-short.svg" alt="Minimal Humans" width="150" height="49">
 </a>
+</div>
 </aside>
 <main id="content"${page.slug === "index" ? ' class="landing"' : ""}>
 ${contents(headings)}
@@ -407,6 +455,7 @@ source of truth; if this page disagrees with it, the repository is right.</p>
 </div>
 </main>
 </div>
+${NAV_SCRIPT}
 ${TOC_SCRIPT}
 </body>
 </html>

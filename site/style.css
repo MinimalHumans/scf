@@ -21,6 +21,7 @@
   --side-ink: var(--cream);
   --side-soft: rgba(236, 229, 218, 0.62);
   --side-hover: rgba(236, 229, 218, 0.1);
+  --bar: 3.75rem;   /* the sidebar's height when, narrow, it is a bar */
 
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   --text: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui,
@@ -71,13 +72,15 @@ body::before {
 }
 .brand { display: block; padding: 0 .4rem; margin-bottom: 1.25rem; }
 .brand img { display: block; width: 100%; max-width: 200px; height: auto; }
+.menu-btn { display: none; }   /* narrow screens only: see the end */
+.side-body { flex: 1 0 auto; display: flex; flex-direction: column; }
 .side h2 {
   background: none;
   margin: 1.4rem 0 .4rem; padding: 0 .55rem;
   font-size: .68rem; font-weight: 700; letter-spacing: .12em;
   text-transform: uppercase; color: var(--amber);
 }
-.side ul { list-style: none; margin: 0; padding: 0; }
+.side ul { list-style: none; margin: 0; padding: 0; display: flow-root; }
 .side li { margin: .08rem 0; }
 .side a {
   display: block; padding: .3rem .55rem; border-radius: 5px;
@@ -110,7 +113,8 @@ article img {
   border: 1px solid var(--rule); border-radius: 6px;
   box-shadow: 0 6px 20px rgb(0 0 0 / .18);
 }
-li > p > img, li > img { margin: .75rem 0 1rem; }
+li > p > .zoom > img, li > .zoom > img { margin: .75rem 0 1rem; }
+.zoom { display: block; cursor: zoom-in; }
 
 h1, h2, h3, h4, h5, h6 { line-height: 1.25; scroll-margin-top: 1.5rem; }
 h1 {
@@ -267,13 +271,79 @@ footer {
 }
 footer .credit { margin-top: .4rem; }
 
+/* ---- narrow ----
+   The sidebar goes above the text, and whole it would be the first two
+   screens of every page on a phone. So with script it is a bar that
+   stays at the top, and the navigation opens beneath it over the page;
+   without script it stays open, in as many columns as fit. */
 @media (max-width: 60rem) {
-  .shell { flex-direction: column; gap: 0; }
+  .shell { flex-direction: column; align-items: stretch; gap: 0; }
   .side {
     position: static; height: auto; width: 100%; padding-top: 1.5rem;
   }
   .brand img { max-width: 170px; }
-  .maker { margin-top: 1.25rem; }
+  .side nav { column-width: 10rem; column-gap: 1rem; }
+  .group { break-inside: avoid; padding-bottom: 1.1rem; }
+  .side h2 { margin-top: 0; }
+  .side li a { padding-block: .45rem; }
+  .repo { margin-top: .4rem; }
+  .maker { margin-top: 0; }
   main { padding: 1.75rem 1rem 4rem; }
   .hero { padding: 1.75rem 1rem; }
+
+  /* a heading jumped to must clear the bar */
+  .js { scroll-padding-top: var(--bar); }
+  .js .side {
+    position: sticky; z-index: 10; height: var(--bar); overflow: visible;
+    flex-direction: row; align-items: center; justify-content: space-between;
+    padding: 4px 1rem 0;   /* 4px: the brand stripe lies over the top */
+  }
+  .js .brand { margin: 0; padding: 0; }
+  .js .brand img { width: auto; max-width: none; height: 2.4rem; }
+  .js .menu-btn {
+    display: inline-flex; align-items: center; gap: .6rem;
+    min-height: 2.5rem; padding: 0 .85rem;
+    background: none; color: var(--side-ink); cursor: pointer;
+    border: 1px solid var(--side-soft); border-radius: 6px;
+    font: 700 .7rem/1 var(--text); letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+  .js .menu-btn:hover { background: var(--side-hover); }
+  .menu-icon, .menu-icon::before, .menu-icon::after {
+    display: block; width: 1.05rem; height: 2px; border-radius: 1px;
+    background: currentColor; transition: transform 120ms;
+  }
+  .menu-icon { position: relative; }
+  .menu-icon::before, .menu-icon::after {
+    content: ""; position: absolute; left: 0;
+  }
+  .menu-icon::before { top: -5px; }
+  .menu-icon::after { top: 5px; }
+  .side.open .menu-icon { background: none; }
+  .side.open .menu-icon::before { transform: translateY(5px) rotate(45deg); }
+  .side.open .menu-icon::after { transform: translateY(-5px) rotate(-45deg); }
+
+  .js .side-body {
+    display: none; position: absolute; top: 100%; left: 0; right: 0;
+    max-height: calc(100vh - var(--bar));
+    max-height: calc(100dvh - var(--bar));
+    overflow-y: auto; overscroll-behavior: contain;
+    padding: 1.1rem 1.1rem 1.25rem; background: var(--side);
+    border-top: 1px solid var(--side-hover);
+    box-shadow: 0 14px 28px rgb(0 0 0 / .3);
+  }
+  /* the two closing links share a line where there is room for both */
+  .js .side.open .side-body {
+    display: flex; flex-flow: row wrap; align-items: flex-end;
+    justify-content: space-between; gap: .75rem 1rem;
+  }
+  .js .side nav { width: 100%; }
+  .js .repo { margin: 0; padding-bottom: .35rem; }
+  .js .maker { padding-top: 0 !important; }
+  .js .maker img { width: 120px; }
+  /* the page behind an open menu, dimmed; a tap on it closes the menu */
+  .js .side.open::after {
+    content: ""; position: fixed; inset: var(--bar) 0 0; z-index: -1;
+    background: rgb(0 0 0 / .45);
+  }
 }
